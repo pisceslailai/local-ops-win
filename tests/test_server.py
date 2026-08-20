@@ -27,6 +27,8 @@ class ParsingTests(unittest.TestCase):
         self.assertIsNotNone(server.validate_port(70000)[1])
 
     def test_listener_scan_preserves_ipv6_loopback_for_open_links(self):
+        if server.IS_WIN:
+            self.skipTest("lsof 解析为 macOS 专属；Windows 解析见 test_windows.py")
         output = """COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME
 node 101 user 1u IPv6 0x0 0t0 TCP [::1]:5173 (LISTEN)
 node 202 user 2u IPv4 0x0 0t0 TCP 127.0.0.1:8000 (LISTEN)
@@ -128,6 +130,7 @@ class OriginAttributionTests(unittest.TestCase):
 
 
 class ScriptCommandTests(unittest.TestCase):
+    @unittest.skipIf(server.IS_WIN, "macOS 运行器/引号语义")
     def test_script_extensions_choose_the_expected_runtime_and_quote_paths(self):
         cases = {
             ".py": "python3",
@@ -144,6 +147,7 @@ class ScriptCommandTests(unittest.TestCase):
                     parts = shlex.split(server.command_for_script(path))
                     self.assertEqual(parts, [runner, "--", path])
 
+    @unittest.skipIf(server.IS_WIN, "macOS 执行位语义")
     def test_executable_command_is_invoked_directly(self):
         with tempfile.TemporaryDirectory() as td:
             path = os.path.join(td, "nightly job.command")
@@ -153,6 +157,7 @@ class ScriptCommandTests(unittest.TestCase):
             self.assertEqual(
                 shlex.split(server.command_for_script(path)), [path])
 
+    @unittest.skipIf(server.IS_WIN, "macOS 执行位语义")
     def test_non_executable_command_uses_bash(self):
         with tempfile.TemporaryDirectory() as td:
             path = os.path.join(td, "nightly job.command")
@@ -180,6 +185,7 @@ class AppHealthTests(unittest.TestCase):
         self.assertEqual(health["issues"][0]["kind"], "script-missing")
         self.assertEqual(health["issues"][0]["action"], "pick-script")
 
+    @unittest.skipIf(server.IS_WIN, "macOS bash 包装语义")
     def test_relative_script_uses_configured_working_directory(self):
         with tempfile.TemporaryDirectory() as td:
             path = os.path.join(td, "job.sh")
@@ -188,6 +194,7 @@ class AppHealthTests(unittest.TestCase):
             app = {"command": "/bin/bash -- job.sh", "cwd": td}
             self.assertFalse(server.inspect_app_health(app)["blocking"])
 
+    @unittest.skipIf(server.IS_WIN, "macOS bash 包装语义")
     def test_missing_cwd_does_not_cascade_for_relative_script(self):
         with tempfile.TemporaryDirectory() as td:
             missing = os.path.join(td, "gone")
@@ -218,6 +225,7 @@ class AppHealthTests(unittest.TestCase):
                 {"command": "definitely-not-installed --version", "cwd": None})
         self.assertEqual(health["issues"][0]["kind"], "runtime-missing")
 
+    @unittest.skipIf(server.IS_WIN, "macOS 执行位语义")
     def test_direct_script_requires_execute_permission_but_bash_script_does_not(self):
         with tempfile.TemporaryDirectory() as td:
             path = os.path.join(td, "job.command")
@@ -234,11 +242,17 @@ class AppHealthTests(unittest.TestCase):
     def test_broken_script_symlink_is_unavailable(self):
         with tempfile.TemporaryDirectory() as td:
             link = os.path.join(td, "job.py")
-            os.symlink(os.path.join(td, "missing.py"), link)
+            try:
+                os.symlink(os.path.join(td, "missing.py"), link)
+            except OSError as exc:
+                if server.IS_WIN and getattr(exc, "winerror", None) == 1314:
+                    self.skipTest("当前 Windows 未启用创建符号链接权限")
+                raise
             health = server.inspect_app_health(
                 {"command": server.command_for_script(link), "cwd": td})
         self.assertEqual(health["issues"][0]["kind"], "script-missing")
 
+    @unittest.skipIf(server.IS_WIN, "Windows 启动路径见 test_windows.py")
     def test_task_cancel_exit_code_survives_shell_wrapper(self):
         with tempfile.TemporaryDirectory() as td, \
                 mock.patch.object(server, "LOGS_DIR", td):
@@ -300,11 +314,13 @@ class ProjectDetectionTests(unittest.TestCase):
             static, static_error = server.detect_project(static_dir)
 
         self.assertIsNone(django_error)
-        self.assertEqual(django["candidates"][0]["command"], "python3 manage.py runserver")
+        py = "python" if server.IS_WIN else "python3"
+        self.assertEqual(django["candidates"][0]["command"],
+                         py + " manage.py runserver")
         self.assertEqual(django["candidates"][0]["port"], 8000)
         self.assertIsNone(static_error)
         self.assertEqual(static["candidates"][0]["command"],
-                         "python3 -m http.server 8000")
+                         py + " -m http.server 8000")
 
     def test_invalid_folder_returns_a_clear_error(self):
         result, error = server.detect_project("/path/that/does/not/exist")
@@ -361,6 +377,8 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(server.Config.DEFAULT, original)
 
     def test_atomic_write_keeps_previous_good_version_as_backup(self):
+        if server.IS_WIN:
+            self.skipTest("Windows 无 POSIX 权限位")
         with tempfile.TemporaryDirectory() as td:
             path = os.path.join(td, "config.json")
             with open(path, "w", encoding="utf-8") as f:
@@ -457,6 +475,8 @@ class RuntimeStorageTests(unittest.TestCase):
                 server.resolve_runtime_dir("TEST_CONSOLE_DIR", "/tmp/default")
 
     def test_first_run_copies_legacy_data_privately_without_deleting_source(self):
+        if server.IS_WIN:
+            self.skipTest("Windows 无 POSIX 权限位")
         with tempfile.TemporaryDirectory() as td:
             legacy = os.path.join(td, "project-data")
             target = os.path.join(td, "Application Support", "总控台")
@@ -573,7 +593,8 @@ class RuntimeStorageTests(unittest.TestCase):
             log_path = os.path.join(logs, "console.log")
             with open(log_path, encoding="utf-8") as f:
                 self.assertEqual(f.read(), "launcher-log-ready\n")
-            self.assertEqual(os.stat(log_path).st_mode & 0o777, 0o600)
+            if not server.IS_WIN:
+                self.assertEqual(os.stat(log_path).st_mode & 0o777, 0o600)
 
 
 class ProcessIdentityTests(unittest.TestCase):
@@ -594,7 +615,9 @@ class ProcessIdentityTests(unittest.TestCase):
     def test_real_started_process_is_identified_and_stoppable(self):
         with tempfile.TemporaryDirectory() as td, \
                 mock.patch.object(server, "LOGS_DIR", td):
-            app = {"id": "deadbeef", "command": "sleep 20", "cwd": td}
+            app = {"id": "deadbeef",
+                   "command": 'python -c "import time; time.sleep(20)"',
+                   "cwd": td}
             ok, error, proc, pgid, token = server.start_app(app)
             self.assertTrue(ok, error)
             tracked = dict(app, lastPid=proc.pid, lastPgid=pgid, runToken=token)
@@ -610,24 +633,33 @@ class ProcessIdentityTests(unittest.TestCase):
                 proc.wait(timeout=3)
             finally:
                 if proc.poll() is None:
-                    try:
-                        os.killpg(proc.pid, signal.SIGKILL)
-                    except OSError:
-                        pass
+                    if server.IS_WIN:
+                        server.stop_pid_tree(proc.pid, force=True)
+                    else:
+                        try:
+                            os.killpg(proc.pid, signal.SIGKILL)
+                        except OSError:
+                            pass
                     proc.wait(timeout=3)
 
     def test_verified_legacy_process_can_be_stopped_without_port_kill(self):
         app = {"id": "legacy", "lastPid": 999, "lastPgid": None,
                "runToken": None, "port": 8080, "cwd": "/tmp/project"}
+        stop_patch = (mock.patch.object(
+            server, "_win_stop_process", return_value=(True, None))
+            if server.IS_WIN else mock.patch.object(server.os, "kill"))
         with mock.patch.object(server, "managed_pids", return_value=[]), \
                 mock.patch.object(server, "legacy_managed_pid", return_value=999), \
-                mock.patch.object(server.os, "kill") as stop:
+                stop_patch as stop:
             target, error = server.resolve_app_stop_target(
                 app, {(999, 8080)})
             self.assertIsNone(error)
             stopped, error = server.signal_app_stop(target)
             self.assertTrue(stopped, error)
-        stop.assert_called_once_with(999, signal.SIGTERM)
+        if server.IS_WIN:
+            stop.assert_called_once_with(999, tree=False, force=False)
+        else:
+            stop.assert_called_once_with(999, signal.SIGTERM)
 
     def test_running_app_can_be_stopped_in_place_before_update(self):
         cfg = mock.Mock()
@@ -805,6 +837,7 @@ class ProcessIdentityTests(unittest.TestCase):
 
 
 class LaunchEnvironmentTests(unittest.TestCase):
+    @unittest.skipIf(server.IS_WIN, "Windows 不补 macOS 路径（见 build_launch_env）")
     def test_headless_launch_path_includes_common_user_node_locations(self):
         with mock.patch.object(server.os.path, "expanduser", return_value="/Users/example"), \
                 mock.patch.object(server.glob, "glob", side_effect=[

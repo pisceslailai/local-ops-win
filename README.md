@@ -2,11 +2,11 @@
 
 **Preview / Alpha · 源码预览**
 
-总控台是一个面向 macOS 的本地服务与批处理任务快速启动、运行监测工具。它把常用项目命令、长期服务和一次性批处理任务集中到本地网页中，并用 Python 3 标准库提供只绑定回环地址的后端；前端是无构建、无 CDN 的原生 HTML/CSS/JavaScript。
+总控台是一个面向 Windows 与 macOS 的本地服务、批处理任务快速启动和运行监测工具。它把常用项目命令、长期服务和一次性任务集中到本地网页中，并用 Python 3 标准库提供只绑定回环地址的后端；前端是无构建、无 CDN 的原生 HTML/CSS/JavaScript。
 
-> 当前版本仍处于 Preview / Alpha 阶段，以源码预览形式提供。接口、配置格式和安装方式仍可能调整；`总控台.app` 目前不是可单独复制的自包含应用，也尚不代表经过签名、公证的最终 macOS 发行版。
+> 当前版本仍处于 Preview / Alpha 阶段，以源码预览形式提供。接口、配置格式和安装方式仍可能调整；Windows 的 `start.bat` 与 macOS 的 `总控台.app` 都依赖完整项目目录和本机 Python，不是自包含安装包。
 
-总控台只服务当前 Mac 和当前用户，不是远程运维、多人协作或公网管理面板。它能够以当前用户权限执行保存的 shell 命令；不要将监听地址、反向代理、SSH 隧道或端口映射暴露到不受信任的网络。
+总控台只服务当前电脑和当前用户，不是远程运维、多人协作或公网管理面板。它能够以当前用户权限执行保存的命令；不要将监听地址、反向代理、SSH 隧道或端口映射暴露到不受信任的网络。
 
 ## 维护说明
 
@@ -35,34 +35,29 @@
 
 ## 系统要求
 
-- macOS 12 或更高版本。
+- **macOS 12 或更高版本**，或 **Windows 10/11（64 位）**。
 - Python 3.12。运行时仅使用 Python 标准库。
-- macOS 自带的 `ps`、`lsof`、`osascript` 等系统工具。
-- Safari、Chrome 或其他支持 ES Modules 的现代浏览器。
+- macOS 自带的 `ps`、`lsof`、`osascript` 等系统工具；Windows 自带的
+  `netstat`、`taskkill`、`powershell`（PowerShell 5.1 已内置）。
+- Safari、Chrome、Edge 或其他支持 ES Modules 的现代浏览器。
 
 `VERSION` 是项目版本的唯一权威来源。`Info.plist`、发行包名和发行说明应与它保持一致。
 
 ## 安装
 
-总控台以完整项目目录运行，`总控台.app` 是项目内启动器，不是可以单独复制的自包含应用。
+总控台必须保留完整项目目录，不能只复制启动脚本。
 
-1. **下载并解压**：将发行 zip 解压到一个你有读写权限的位置（如 `~/Applications` 或文稿下的固定目录）。解压后请保持目录结构完整，不要单独移动 `总控台.app`。
-2. **确认 Python 3.12**：在「终端」运行：
+Windows：
 
-   ```bash
-   python3 --version
-   ```
+1. 将项目解压到有读写权限的固定目录，例如 `D:\Apps\总控台`。
+2. 在 PowerShell 运行 `py -3 --version`，确认是 Python 3.12 或更高版本；没有 `py` 时可用 `python --version`。未安装时从 <https://www.python.org/downloads/windows/> 安装，并勾选 Python Launcher 或 PATH 选项。
+3. 双击根目录的 `start.bat`。已有实例时会直接打开浏览器；首次启动会在 `%APPDATA%\总控台` 创建配置。
 
-   显示 3.12 或更高即可。未安装或版本过低时，到 <https://www.python.org/downloads/> 下载官方 macOS 安装包，按向导安装一次即可（之后不再需要操作）。
-3. **首次打开（未签名应用，二选一）**：
-   - 图形方式：在 `总控台.app` 上**点右键 → 打开**，在弹窗中再点「打开」。只需做一次。
-   - 命令行方式（等价，适合批量或远程）：
+macOS：
 
-     ```bash
-     xattr -dr com.apple.quarantine "总控台.app"
-     ```
-
-     之后即可正常双击。这是 macOS 对互联网下载应用的常规隔离提示，不是程序损坏。
+1. 解压到 `~/Applications` 或文稿下的固定目录。
+2. 运行 `python3 --version`，确认是 3.12 或更高版本。
+3. 首次在 `总控台.app` 上右键选择“打开”；也可先运行 `xattr -dr com.apple.quarantine "总控台.app"`。
 
 ## 运行
 
@@ -70,9 +65,9 @@
 
 | 方式 | 操作 | 适用场景 |
 | --- | --- | --- |
-| 双击应用 | 双击 `总控台.app` | 日常使用。后台运行，无 Terminal 窗口和 Dock 图标 |
-| 双击脚本 | 双击 `start.command` | 想在 Terminal 里看实时输出 |
-| 命令行 | `python3 server.py` | 调试、脚本化或远程 SSH 启动 |
+| 双击应用 | 双击 `总控台.app` | macOS 日常使用。后台运行，无 Terminal 窗口和 Dock 图标 |
+| 双击脚本 | 双击 `start.command`（macOS）/ `start.bat`（Windows） | 想在终端窗口里看实时输出 |
+| 命令行 | `python3 server.py`（macOS）/ `py -3 server.py`（Windows） | 调试、脚本化或远程启动 |
 
 命令行还有两个可选参数：
 
@@ -83,9 +78,36 @@ python3 server.py --preferred-port 9603  # 在 9600-9609 内指定优先端口
 
 启动后程序只绑定 `127.0.0.1`，从 9600 起尝试端口，被占用则递增（最多 10 个），并自动打开浏览器。命令行参数、环境变量（`CONSOLE_DATA_DIR` / `CONSOLE_LOG_DIR`）见下文“数据、隐私与备份”。
 
-**实际地址在哪里看**：顶栏「重启 :9600」按钮上直接显示当前端口；或看终端输出 / `~/Library/Logs/总控台/console.log`。浏览器手动访问 `http://127.0.0.1:端口号/` 即可。
+**实际地址在哪里看**：顶栏「重启 :9600」按钮上直接显示当前端口；或查看终端输出、Windows `%LOCALAPPDATA%\总控台\Logs\console.log` / macOS `~/Library/Logs/总控台/console.log`。浏览器手动访问 `http://127.0.0.1:端口号/` 即可。
 
 **停止与重启**：顶栏「重启 / 停止」控制的是总控台自身（网页服务）。停止总控台**不会**停止启动台里已经运行的应用——它们是独立进程组，会继续运行；下次打开总控台时会自动重新识别。重启总控台会加载磁盘上的最新代码，同样不影响运行中的应用。
+
+## Windows 适配说明
+
+总控台在 Windows 上以等价语义运行，平台差异如下：
+
+- **受控进程模型**：Windows 没有进程组/信号。每个应用由一个小型 Python
+  “锚点”进程承载（`tools/win_anchor.py`，命令行带随机 token），用户命令
+  写入临时 `.cmd` 批处理文件后由 `cmd /c` 执行——这是 Windows 上能原样
+  执行任意命令的唯一稳妥通道。受控身份 = 锚点 PID + token 命令行 +
+  PPID 后代树；锚点会等到整棵进程树清空才退出（等价于 macOS 的 `wait`）。
+- **停止语义**：Windows 没有 SIGTERM。点“停止”会先尝试 `taskkill /T`
+  （仅对带窗口进程有效），失败自动升级为 `taskkill /T /F` 强制结束整棵
+  进程树。因此被停止的应用不会收到优雅退出通知，正在写入的数据可能丢失。
+- **进程扫描**：`lsof`/`ps` 换成语言无关解析的 `netstat -ano -p tcp` 与
+  PowerShell CIM；CPU 使用格式化性能计数器，内存使用 WorkingSet 占比。
+- **当前用户校验**：通过进程访问令牌读取所有者 SID 指纹；无法确认所有者
+  的进程不会被认领、关联或结束。
+- **工作目录读取**：通过 `NtQueryInformationProcess` 读 PEB（ctypes，
+  只读）；同架构进程可读，被拒绝访问时该进程不显示目录。
+- **文件选择框**：PowerShell + WinForms 原生对话框（目录/文件）。
+- **系统通知**：任务完成通知由浏览器 Web Notification 实现，两平台一致。
+- **数据目录**：Windows 默认 `%APPDATA%\总控台`（配置/图标）与
+  `%LOCALAPPDATA%\总控台\Logs`（日志）；同样支持
+  `CONSOLE_DATA_DIR`/`CONSOLE_LOG_DIR` 覆盖。Windows 无 POSIX 权限位，
+  目录/文件安全由 NTFS ACL 保障（健康检查会自动跳过权限位校验）。
+- **启动台自动识别**：Windows 上 Python 项目使用 `python`/`py -3` 运行器，
+  并额外识别 `start.bat`/`dev.bat`/`start.cmd`/`start.ps1` 等启动脚本。
 
 ## 使用
 
@@ -99,7 +121,7 @@ python3 server.py --preferred-port 9603  # 在 9600-9609 内指定优先端口
 - **排序**：鼠标拖拽，或聚焦卡片后按空格进入键盘排序（方向键移动，空格确认）。
 - **批量停止**：右侧「快捷操作」里可一键停止全部运行中的应用（有确认框，逐个安全停止，绝不按端口杀进程）。
 
-### 服务监控（看这台 Mac 在跑什么）
+### 服务监控（看这台电脑在跑什么）
 
 - **概览卡**：在线服务/后台应用/总 CPU/总内存（带最近一分钟负载曲线）/端口警告/最后更新。
 - **服务表格**：每个服务的 PID、端口、目录、负载、时长、状态，以及**启动者徽标**——溯源显示这个进程是哪个 AI 助手（Codex/Claude/Kimi 等）、编辑器（VS Code/Cursor 等）、终端或总控台启动的。点端口直接打开服务；行尾按钮可加入启动台、置顶、隐藏、展开完整命令或安全结束进程。
@@ -107,15 +129,15 @@ python3 server.py --preferred-port 9603  # 在 9600-9609 内指定优先端口
 - **后台与已隐藏**：系统/GUI 应用进程默认折叠在「应用后台」；被隐藏的服务可随时恢复。
 - **关注的进程**：输入关键字（如 `ffmpeg`）回车，匹配进程实时列出。
 
-### 日志中心（⌘J）
+### 日志中心（Ctrl/⌘ J）
 
-导航轨「日志中心」或快捷键 ⌘J（⌘L 是浏览器保留键）：所有应用按运行中优先排列，点开任意一行看实时日志；底部固定总控台自身日志入口。
+导航轨「日志中心」或快捷键 Ctrl/⌘ J：所有应用按运行中优先排列，点开任意一行看实时日志；底部固定总控台自身日志入口。
 
 ### 设置中心
 
 导航轨齿轮：任务完成通知开关（系统通知，切走页面也能收到）、外观三态（自动/浅色/深色）、版本/端口/工作目录/数据目录信息。
 
-### 命令面板（⌘K）
+### 命令面板（Ctrl/⌘ K）
 
 全局搜索并执行：添加服务/任务、启动/停止/重启任意应用、打开页面、查看日志、切换视图、开关任务通知、查看总控台日志等，全键盘操作。
 
@@ -136,20 +158,20 @@ python3 server.py --preferred-port 9603  # 在 9600-9609 内指定优先端口
 
 ## 数据、隐私与备份
 
-运行数据与程序目录分离，默认放在 macOS 用户资料库：
+运行数据与程序目录分离，默认放在当前平台的用户数据目录：
 
 | 路径 | 内容 | 备份建议 |
 | --- | --- | --- |
-| `~/Library/Application Support/总控台/config.json` | 应用命令、本地路径、端口、标记和运行识别信息 | 必须 |
-| `~/Library/Application Support/总控台/config.json.bak` | 上一份已知良好的配置 | 必须 |
-| `~/Library/Application Support/总控台/icons/` | 用户上传的图标和站点图标 | 按需 |
-| `~/Library/Logs/总控台/` | 应用与总控台运行日志 | 通常不需 |
+| macOS `~/Library/Application Support/总控台/config.json`<br>Windows `%APPDATA%\总控台/config.json` | 应用命令、本地路径、端口、标记和运行识别信息 | 必须 |
+| `config.json.bak` | 上一份已知良好的配置 | 必须 |
+| `icons/` | 用户上传的图标和站点图标 | 按需 |
+| macOS `~/Library/Logs/总控台/`<br>Windows `%LOCALAPPDATA%\总控台\Logs` | 应用与总控台运行日志 | 通常不需 |
 
 目录权限会收紧为 `0700`，配置、图标和日志文件为 `0600`。这些文件仍可能含个人路径、完整 shell 命令和日志内容；不应进入 Git，也不应随发行包或故障报告对外传播。
 
 ### 旧版数据首次迁移
 
-如果新目标目录尚不存在，首次启动会将项目内旧 `data/config.json{,.bak}` 和 `data/icons/` 安全复制到 Application Support，将 `data/logs/` 复制到 Library Logs。迁移使用临时目录后原子落位，并且：
+如果新目标目录尚不存在，首次启动会将项目内旧 `data/config.json{,.bak}`、`data/icons/` 和 `data/logs/` 安全复制到当前平台的用户数据/日志目录。迁移使用临时目录后原子落位，并且：
 
 - 旧 `data/` 始终保留，不会自动删除。
 - 目标已存在时绝不覆盖或合并，避免把更新的用户数据换回旧版。
@@ -164,18 +186,26 @@ CONSOLE_LOG_DIR="/private/path/console-logs" \
 python3 server.py
 ```
 
+Windows PowerShell 等价写法：
+
+```powershell
+$env:CONSOLE_DATA_DIR = 'D:\ConsoleData'
+$env:CONSOLE_LOG_DIR = 'D:\ConsoleLogs'
+py -3 server.py
+```
+
 自定义值必须是非空的绝对路径，并指向总控台专用的非符号链接子目录；不要直接填 `/`、用户主目录或项目根目录。
 
 ### 备份
 
 1. 不再执行新的启动、停止或编辑操作。
 2. 停止总控台。
-3. 将 `~/Library/Application Support/总控台/` 复制到受保护的备份目录。
+3. 将 Windows `%APPDATA%\总控台\` 或 macOS `~/Library/Application Support/总控台/` 复制到受保护的备份目录。
 4. 记录当前 `VERSION`，以便恢复时匹配配置格式。
 
 ### 恢复
 
-1. 确保总控台已停止，并另存当前 `~/Library/Application Support/总控台/`。
+1. 确保总控台已停止，并另存当前用户数据目录。
 2. 将备份中的 `config.json` 和 `icons/` 复制回对应位置，权限分别设为 `0600` 和 `0700`。
 3. 重新启动，逐项确认命令、工作目录和端口。
 
@@ -184,7 +214,7 @@ python3 server.py
 ## 升级
 
 1. 阅读 `CHANGELOG.md`，确认是否有配置或平台变更。
-2. 停止总控台并完整备份 `~/Library/Application Support/总控台/`。
+2. 停止总控台并完整备份当前用户数据目录。
 3. 用新版本替换程序文件；用户数据保持在 Library 目录中。
 4. 运行 `make check`。
 5. 启动后检查应用数量、主题、关注关键字和一个可控服务的完整启停。
@@ -195,41 +225,41 @@ python3 server.py
 
 1. 如果不希望已启动的服务继续运行，先在启动台逐个停止它们。
 2. 停止总控台。
-3. 按需导出 `~/Library/Application Support/总控台/` 备份。
+3. 按需导出当前用户数据目录备份。
 4. 将整个项目目录移到废纸篓。
-5. 确认不再需要数据后，手动删除 `~/Library/Application Support/总控台/` 和 `~/Library/Logs/总控台/`。
+5. 确认不再需要数据后，手动删除 Windows `%APPDATA%\总控台`、`%LOCALAPPDATA%\总控台\Logs`，或 macOS 对应的 Application Support / Library Logs 目录。
 
 程序不会安装系统启动项，卸载时也不会自动删除用户数据。
 
 ## 安全边界
 
-总控台不是多用户服务器或远程管理面板。它能以当前 macOS 用户的权限执行你保存的 shell 命令，因此：
+总控台不是多用户服务器或远程管理面板。它能以当前系统用户的权限执行你保存的命令，因此：
 
 - 只添加你已检查且信任的命令和工作目录。
 - 不要将服务绑定到 `0.0.0.0`，不要通过反向代理、SSH 隧道或端口映射对外暴露。
 - 不要在共享或不受信任的用户账户中运行。
-- 不要把 Application Support 中的 `config.json`、Library Logs 日志或故障截图未经脱敏就上传。
+- 不要把用户数据目录中的 `config.json`、日志或故障截图未经脱敏就上传。
 - 本地回环绑定只是第一层边界，不能替代写接口的 Host/Origin/控制令牌防护。发布验收时必须执行 `RELEASE_CHECKLIST.md` 中的安全项。
 
 ## 故障排查
 
 ### 双击后没有界面
 
-- 确认 `python3 --version` 可用且符合要求。
-- 查看 `~/Library/Logs/总控台/console.log`。
-- 用 `python3 server.py` 从终端启动，直接查看错误。
-- 不要单独移动 `总控台.app`；它必须保持在项目根目录。
+- Windows 确认 `py -3 --version`（或 `python --version`）可用；macOS 确认 `python3 --version`。
+- 查看 Windows `%LOCALAPPDATA%\总控台\Logs\console.log` 或 macOS `~/Library/Logs/总控台/console.log`。
+- Windows 用 `py -3 server.py`、macOS 用 `python3 server.py` 从终端启动，直接查看错误。
+- 不要单独移动 `start.bat` 或 `总控台.app`；它们必须保持在项目根目录。
 
 ### 9600 打不开
 
-程序可能已选择 9601–9609。查看终端输出或 `~/Library/Logs/总控台/console.log` 中的实际地址。服务可访问时，`GET /api/health` 会返回程序版本、配置 schema 和降级原因，且不会执行 `ps/lsof` 扫描。
+程序可能已选择 9601–9609。查看顶栏、终端输出或 `console.log` 中的实际地址。服务可访问时，`GET /api/health` 会返回程序版本、平台、配置 schema 和降级原因，且不会执行进程扫描。
 
 ### 应用启动失败
 
 - 先打开该应用的日志和“启动诊断”。
 - 确认工作目录仍然存在、命令可在普通 shell 中运行。
 - 检查启动瞬间配置端口是否正被其他进程占用；不同项目允许保存相同的常见开发端口。
-- Finder 启动的应用不会读取你的 shell 配置；总控台会补入常用 Node/Homebrew 路径，但非标准安装仍可能需要显式绝对路径。
+- macOS Finder 启动时总控台会补入常用 Node/Homebrew 路径；Windows 使用当前用户 PATH。非标准安装仍可能需要显式绝对路径。
 
 ### 配置丢失或损坏
 

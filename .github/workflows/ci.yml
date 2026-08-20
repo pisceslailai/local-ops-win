@@ -44,3 +44,48 @@ jobs:
           make release PYTHON=python
           cmp "$RUNNER_TEMP/console-first.zip" dist/console-*.zip
           make release-verify PYTHON=python
+
+  windows-check:
+    name: Windows check
+    runs-on: windows-latest
+    timeout-minutes: 20
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Show toolchain
+        run: |
+          python --version
+          node --version
+
+      - name: Run project checks (Windows 子集)
+        run: python tools/check_project.py
+
+      - name: Start server smoke test
+        shell: pwsh
+        run: |
+          $env:CONSOLE_DATA_DIR = "$env:RUNNER_TEMP\console-data"
+          $env:CONSOLE_LOG_DIR = "$env:RUNNER_TEMP\console-logs"
+          $proc = Start-Process python -ArgumentList 'server.py','--no-browser','--preferred-port','9603' -PassThru -WindowStyle Hidden
+          try {
+            $deadline = (Get-Date).AddSeconds(30)
+            do {
+              Start-Sleep -Milliseconds 500
+              try { $health = Invoke-RestMethod 'http://127.0.0.1:9603/api/health' -TimeoutSec 2 } catch { $health = $null }
+            } while (-not $health -and (Get-Date) -lt $deadline)
+            if (-not $health) { throw '健康检查超时' }
+            Write-Host "health ok=$($health.ok) platform=$($health.platform)"
+            if ($health.platform -ne 'win32') { throw 'platform 不是 win32' }
+          } finally {
+            if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force }
+          }

@@ -295,7 +295,8 @@ class OperationLockTests(unittest.TestCase):
     def setUp(self):
         self.h = HttpHarness()
         app = {**server.Config.APP_DEFAULT,
-               "id": "deadbeef", "name": "Service", "command": "sleep 10",
+               "id": "deadbeef", "name": "Service",
+               "command": 'python -c "import time; time.sleep(10)"',
                "kind": "service", "cwd": self.h.tmp.name}
         self.h.cfg.update(lambda data: data["apps"].append(app))
 
@@ -397,7 +398,9 @@ class ProcessLifecycleHardeningTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td, \
                 mock.patch.object(server, "LOGS_DIR", td):
             base = {**server.Config.APP_DEFAULT, "id": "deadbeef",
-                    "name": "Service", "command": "sleep 20", "cwd": td}
+                    "name": "Service",
+                    "command": 'python -c "import time; time.sleep(20)"',
+                    "cwd": td}
             cfg = self._config_with_app(td, base)
             ok, error, proc, pgid, token = server.start_app(base)
             self.assertTrue(ok, error)
@@ -415,17 +418,21 @@ class ProcessLifecycleHardeningTests(unittest.TestCase):
             finally:
                 if server.stop_target_alive(
                         {"kind": "group", "id": pgid, "members": [proc.pid]}):
-                    try:
-                        os.killpg(pgid, signal.SIGKILL)
-                    except OSError:
-                        pass
+                    if server.IS_WIN:
+                        server.stop_pid_tree(pgid, force=True)
+                    else:
+                        try:
+                            os.killpg(pgid, signal.SIGKILL)
+                        except OSError:
+                            pass
 
     def test_manual_task_stop_replaces_old_success_with_stopped_result(self):
         with tempfile.TemporaryDirectory() as td, \
                 mock.patch.object(server, "LOGS_DIR", td):
             previous = {"code": 0, "at": 123, "durationSec": 0.1}
             base = {**server.Config.APP_DEFAULT, "id": "deadbeef",
-                    "name": "Task", "kind": "task", "command": "sleep 20",
+                    "name": "Task", "kind": "task",
+                    "command": 'python -c "import time; time.sleep(20)"',
                     "cwd": td, "lastExit": previous}
             cfg = self._config_with_app(td, base)
             ok, error, proc, pgid, token = server.start_app(base)
@@ -448,11 +455,15 @@ class ProcessLifecycleHardeningTests(unittest.TestCase):
             finally:
                 if server.stop_target_alive(
                         {"kind": "group", "id": pgid, "members": [proc.pid]}):
-                    try:
-                        os.killpg(pgid, signal.SIGKILL)
-                    except OSError:
-                        pass
+                    if server.IS_WIN:
+                        server.stop_pid_tree(pgid, force=True)
+                    else:
+                        try:
+                            os.killpg(pgid, signal.SIGKILL)
+                        except OSError:
+                            pass
 
+    @unittest.skipIf(server.IS_WIN, "Windows 无 SIGTERM/SIG_IGN 语义（见 test_windows.py）")
     def test_sigterm_timeout_retains_runtime_identity_for_retry(self):
         command = (
             "python3 -c 'import signal,time; "
@@ -559,7 +570,12 @@ class StaticFileServingTests(unittest.TestCase):
                 f.write("secret")
             static = os.path.join(td, "static")
             os.mkdir(static)
-            os.symlink(outside, os.path.join(static, "leak.txt"))
+            try:
+                os.symlink(outside, os.path.join(static, "leak.txt"))
+            except OSError as exc:
+                if server.IS_WIN and getattr(exc, "winerror", None) == 1314:
+                    self.skipTest("当前 Windows 未启用创建符号链接权限")
+                raise
             with mock.patch.object(server, "STATIC_DIR", static):
                 status, body, _ = self.h.request("GET", "/leak.txt")
             self.assertEqual(status, 404)
@@ -616,6 +632,7 @@ class KillEndpointTests(unittest.TestCase):
             if proc.poll() is None:
                 proc.kill()
 
+    @unittest.skipIf(server.IS_WIN, "Windows 无 SIGTERM 语义（kill 即 TerminateProcess）")
     def test_kill_force_sends_sigkill_to_sigterm_immune_process(self):
         code = ("import signal,time; signal.signal(signal.SIGTERM,"
                 " signal.SIG_IGN); time.sleep(30)")

@@ -409,7 +409,7 @@ function updateAppCard(card, app) {
   maybeFetchFavicon(card, app);
 }
 
-async function toggleApp(id, button) {
+async function toggleApp(id, button, windowsStopConfirmed = false) {
   const app = findApp(id);
   if (!app) return;
   const isTask = (app.kind || 'service') === 'task';
@@ -423,6 +423,18 @@ async function toggleApp(id, button) {
     return;
   }
   const starting = !app.running;
+  if (!starting && state.data && state.data.platform === 'win32' &&
+      !windowsStopConfirmed) {
+    openConfirm({
+      title: isTask ? '中止 Windows 任务' : '停止 Windows 服务',
+      bodyHtml: 'Windows 无窗口控制台进程通常无法温和退出。总控台会先尝试普通停止，' +
+        '失败后强制结束已验证的进程树。' +
+        '<div class="confirm-detail">未保存的数据可能丢失；不会按端口结束其他进程。</div>',
+      okText: isTask ? '确认中止' : '确认停止',
+      onOk: () => toggleApp(id, button, true),
+    });
+    return;
+  }
   if (button) {
     button.dataset.busy = 'true';
     button.disabled = true;

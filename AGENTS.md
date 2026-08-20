@@ -1,6 +1,6 @@
 # 总控台 (Console)
 
-本地服务监控与快速启动控制台。**零依赖**：Python 3 标准库后端（单文件）+ 无构建原生前端。推荐双击 `总控台.app` 后台运行（不显示 Terminal/Dock）；`start.command` 保留为终端调试入口。
+本地服务监控与快速启动控制台。**零依赖**：Python 3 标准库后端（单文件）+ 无构建原生前端。macOS 推荐双击 `总控台.app` 后台运行，`start.command` 用于终端调试；Windows 双击 `start.bat` 或运行 `py -3 server.py`。
 
 ## 结构
 
@@ -14,11 +14,13 @@
 - `~/Library/Logs/总控台/{appId}.log` — 应用启动日志；`console.log` 为 `.app` 启动日志
 - `data/` — 旧版项目内数据，仅在新目标不存在的首次启动中复制迁移；保留不删除
 - `start.command` — macOS 双击启动脚本（chmod +x）
+- `start.bat` — Windows 双击启动脚本；优先 `py -3`，回退 `python`
+- `tools/win_anchor.py` — Windows 受控应用锚点，持有 token 并等待 PPID 后代树退出
 - `总控台.app` — macOS 无终端窗口启动器（`LSUIElement` 后台应用；内部直接启动 `server.py`，输出写入 `~/Library/Logs/总控台/console.log`）
 
 ## 运行
 
-`python3 server.py` → 绑定 `127.0.0.1`，端口从 **9600** 起尝试，被占则 +1（最多 10 个）。启动后自动打开浏览器。`/favicon.ico` 返回统一品牌图标。双击 `总控台.app` 会先识别同目录的现有总控台，可直接打开或安全重启，不需要用户输入命令，也不会出现 Terminal 窗口。
+`python3 server.py`（macOS）/ `py -3 server.py`（Windows）→ 绑定 `127.0.0.1`，端口从 **9600** 起尝试，被占则 +1（最多 10 个）。启动后自动打开浏览器。`/favicon.ico` 返回统一品牌图标。
 
 ## API 契约（全部 JSON；icon 上传为原始字节）
 
@@ -100,7 +102,8 @@
 
 ## 后端实现要点
 
-- **端口扫描**：`lsof -iTCP -sTCP:LISTEN -P -n`，按 `(pid, port)` 去重（IPv4/6 重复行）。lsof 的 COMMAND 列会截断，名称以 ps 的 comm 为准。
+- **平台适配层**：macOS 与 Windows 共用全部上层逻辑，平台差异收敛在少量同签名函数里（`IS_WIN` 分支）：扫描（`lsof`/`ps` ↔ `netstat`/PowerShell CIM）、受控进程模型（pgid ↔ PPID 后代树 + `tools/win_anchor.py` 锚点）、停止（`killpg` ↔ `taskkill /T[/F]`）、存活判定（`os.kill(pid,0)` ↔ OpenProcess+GetExitCodeProcess）、cwd（lsof ↔ PEB 读取）、文件选择框（osascript ↔ PowerShell WinForms）、实例锁（flock ↔ msvcrt.locking）、数据目录（`~/Library/...` ↔ `%APPDATA%`/`%LOCALAPPDATA%`）。修改平台相关代码时须保证两平台语义等价并在两平台跑测试。
+- **端口扫描**：`lsof -iTCP -sTCP:LISTEN -P -n`（Windows：`netstat -ano -p tcp`），按 `(pid, port)` 去重（IPv4/6 重复行）。lsof 的 COMMAND 列会截断，名称以 ps 的 comm 为准。
 - **进程详情**：批量 `ps -o pid=,user=,comm=,args=,%cpu=,%mem=,etime= -p <逗号分隔pid>`；只保留 `user == 当前用户`。
 - **cwd**：`lsof -a -p <逗号分隔pid> -d cwd -Fn`，解析 `n` 行。
 - **etime 解析**：`[[dd-]hh:]mm:ss` → 秒。

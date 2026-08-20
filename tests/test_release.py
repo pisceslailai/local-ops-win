@@ -58,7 +58,12 @@ class ReleaseFixtureTests(unittest.TestCase):
 
     def test_symlinked_required_source_is_rejected(self):
         target = self.write("target/server.py")
-        (self.root / "server.py").symlink_to(target)
+        try:
+            (self.root / "server.py").symlink_to(target)
+        except OSError as exc:
+            if os.name == "nt" and getattr(exc, "winerror", None) == 1314:
+                self.skipTest("当前 Windows 未启用创建符号链接权限")
+            raise
         with mock.patch.object(release, "INCLUDE", ("server.py",)):
             with self.assertRaisesRegex(SystemExit, "符号链接"):
                 release.iter_release_files()
@@ -111,7 +116,8 @@ class ReleaseFixtureTests(unittest.TestCase):
             release.verify_archive(second, entries, "1.2.3")
 
         self.assertEqual(first.read_bytes(), second.read_bytes())
-        self.assertEqual(stat.S_IMODE(second.stat().st_mode), 0o644)
+        if os.name != "nt":
+            self.assertEqual(stat.S_IMODE(second.stat().st_mode), 0o644)
         with zipfile.ZipFile(second) as archive:
             infos = {info.filename: info for info in archive.infolist()}
         regular_info = infos["总控台-1.2.3/server.py"]
@@ -177,6 +183,15 @@ class ProjectReleaseManifestTests(unittest.TestCase):
                 self.assertIn(required, names)
         self.assertIn("docs/screenshots/ops-launchpad.jpg", names)
         self.assertIn("docs/screenshots/ops-services.jpg", names)
+        self.assertIn("start.bat", names)
+        self.assertIn("tools/win_anchor.py", names)
+        self.assertIn("tests/test_windows.py", names)
+
+    def test_windows_launcher_is_codepage_safe(self):
+        content = (release.ROOT / "start.bat").read_bytes().decode("ascii")
+        self.assertIn('cd /d "%~dp0"', content)
+        self.assertIn("py -3 server.py --launcher %*", content)
+        self.assertIn("python server.py --launcher %*", content)
 
     def test_required_third_party_licenses_are_in_payload(self):
         names = {

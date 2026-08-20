@@ -207,6 +207,10 @@ const HEALTH_COMPONENT_NAMES = {
   version: '版本',
   config: '配置',
 };
+/* Windows 与 macOS 的启动器名称不同，重启/停止提示按平台切换 */
+function launcherName() {
+  return state.data && state.data.platform === 'win32' ? 'start.bat' : '总控台.app';
+}
 function stateHealthNotice(data) {
   if (!data) return '';
   const health = data.configHealth || {};
@@ -276,11 +280,15 @@ function render() {
 }
 
 function showConsoleActivationInfo(action) {
+  const activationHint = state.data && state.data.platform === 'win32'
+    ? '请双击项目里的 <b>start.bat</b>；已有实例会直接打开控制台。只需做这一次。'
+    : '请双击项目里的 <b>总控台.app</b>，在弹窗中选择“重新启动”。只需做这一次。';
   openConfirm({
     title: '先启用后台控制',
     bodyHtml: '当前 <b>' + escapeHtml(consolePortLabel.textContent || '总控台') +
       '</b> 是修改前启动的旧后台，所以页面还不能直接' + escapeHtml(action) + '。' +
-      '<div class="confirm-detail">请双击项目里的 <b>总控台.app</b>，在弹窗中选择“重新启动”。只需做这一次；以后就能直接在页面里重启或停止。</div>',
+      '<div class="confirm-detail">' + activationHint +
+      '以后就能直接在页面里重启或停止。</div>',
     okText: '知道了',
     tone: 'primary',
     onOk: () => {},
@@ -320,7 +328,7 @@ restartConsoleBtn.addEventListener('click', () => {
       restartDeadlineTimer = setTimeout(() => {
         if (!state.restartingFrom) return;
         state.restartingFrom = null;
-        setConnected(false, '总控台重启超时，请双击“总控台.app”重新打开。');
+        setConnected(false, '总控台重启超时，请双击“' + launcherName() + '”重新打开。');
         render();
       }, 25000);
     },
@@ -337,11 +345,11 @@ stopConsoleBtn.addEventListener('click', () => {
   openConfirm({
     title: '停止总控台',
     bodyHtml: '确定要停止总控台吗？' +
-      '<div class="confirm-detail">当前页面会断开；启动台里已经运行的应用不会被停止。再次使用时，双击“总控台.app”即可。</div>',
+      '<div class="confirm-detail">当前页面会断开；启动台里已经运行的应用不会被停止。再次使用时，双击“' + launcherName() + '”即可。</div>',
     okText: '停止运行',
     onOk: async () => {
       state.stopping = true;
-      banner.textContent = '总控台正在停止…再次启动请双击“总控台.app”。';
+      banner.textContent = '总控台正在停止…再次启动请双击“' + launcherName() + '”。';
       banner.classList.add('show');
       banner.setAttribute('aria-hidden', 'false');
       render();
@@ -352,7 +360,7 @@ stopConsoleBtn.addEventListener('click', () => {
         render();
         return;
       }
-      banner.textContent = '总控台已停止。再次启动请双击“总控台.app”。';
+      banner.textContent = '总控台已停止。再次启动请双击“' + launcherName() + '”。';
     },
   });
 });
@@ -435,7 +443,7 @@ function paletteActions() {
   items.push({
     icon: 'file-text',
     title: '打开日志中心',
-    hint: '日志 · ⌘J',
+    hint: '日志 · Ctrl/⌘ J',
     run: openLogsCenter,
   });
   items.push({

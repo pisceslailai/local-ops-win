@@ -10,6 +10,18 @@
 
 ### Added
 
+- **Windows 10/11 适配**：后端可在 Windows 上完整运行（Python 3.12 标准库）。
+  - 进程扫描改用本地化无关的 `netstat -ano -p tcp` 解析与 PowerShell CIM；CPU 使用格式化性能计数器，内存使用 WorkingSet 占比。
+  - 当前用户边界通过进程访问令牌 SID 指纹校验；无法确认所有者的进程拒绝认领、关联和结束。
+  - 受控进程模型改为「锚点进程 + 随机 token 命令行 + PPID 后代树」：`tools/win_anchor.py` 以临时 `.cmd` 批处理执行用户命令，等整棵进程树清空后以原退出码退出，等价于 macOS 的 bash 包装语义。
+  - 停止应用用 `taskkill /T`（先优雅、失败自动升级 `/F` 树杀）；`pid_alive` 改用 OpenProcess + GetExitCodeProcess（`os.kill(pid,0)` 在 Windows 上对已退出进程仍返回成功）。
+  - 实例锁改用 `msvcrt.locking` 回退（fcntl 仅 POSIX）；数据目录默认 `%APPDATA%\总控台` 与 `%LOCALAPPDATA%\总控台\Logs`。
+  - 工作目录经 PEB 只读读取（`NtQueryInformationProcess`，ctypes）；文件/目录选择框用 PowerShell + WinForms。
+  - 新增 `start.bat` 启动器；项目识别在 Windows 上用 `python`/`py -3` 并识别 `.bat/.cmd/.ps1` 启动脚本。
+  - `/api/state` 与 `/api/health` 增加 `platform` 字段，前端重启/停止提示按平台显示启动器名。
+  - `/api/state` 增加实际 `dataDir`/`logsDir`，设置中心不再硬编码 macOS 路径；Windows 停止前显示强制树终止风险确认。
+  - 新增 `tests/test_windows.py`（Windows 专属解析与真实生命周期测试），macOS 专属测试在 Windows 上显式跳过；CI 增加 Windows 检查 job（含真实启动冒烟测试）。
+  - 项目检查在 Windows 上跳过 bash/plutil 检查（Info.plist 改用 plistlib 校验），并兼容 node 24 的 `--test` 输出格式。
 - 顶栏新增 GitHub 仓库图标按钮，点击在新标签页打开项目源码仓库。
 - 增加用户/开发文档、备份恢复和升级卸载指南。
 - 布局升级为指挥台结构：左侧图标导航轨、启动台与服务监控双视图 KPI 概览卡（含 CPU/内存火花线）、右侧实时动态/实时告警与端口/资源 TOP 5 信息栏、小贴士、页头快捷操作，以及服务/任务分区筛选芯片；服务表格增加 PID、状态列与 CPU 迷你负载条。结构样式集中于 `base.css`。
@@ -42,6 +54,8 @@
 - 多个启动配置现在可以共享同一端口；项目归属由受管进程身份和工作目录判断，只有实际启动时的监听占用才会阻止运行。
 
 ### Fixed
+
+- 修复 Windows 非英文系统无法识别监听端口、PowerShell 5.1 进程运行时长恒为 0，以及外部认领服务只结束单个 PID 而可能遗留子进程的问题。
 
 - 修复从服务监控加入启动台时只创建卡片、未认领来源进程的问题；创建与进程认领现由后端原子完成，项目命令识别完成前不能提前保存。明确认领的服务在 Next/Vite 等框架重建监听子进程、PID 变化后，会按端口、当前用户与真实项目目录唯一重新关联。
 - 修复 Candy 主题超大标题的英文粗体描边出现双重轮廓，并让英文副标题在窄屏明确换行。
