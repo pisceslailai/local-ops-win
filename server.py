@@ -865,15 +865,18 @@ def _win_etime(created):
     return max(0, int(time.time() - created_ts))
 
 
-def _win_tree_of(root_pid, table):
-    """root 及其全部存活后代（按 PPID 链，含孤儿：Windows 子进程在父进程
-    退出后仍保留原 PPID）。返回有序列表。带 visited 防环——Windows 上
-    存在循环 PPID 的异常进程。"""
+def _win_children_map(table):
+    """把进程快照一次转换为 ``ppid -> [pid]`` 索引。"""
     children = {}
     for pid, info in table.items():
         ppid = info.get("ppid")
         if isinstance(ppid, int) and ppid > 0:
             children.setdefault(ppid, []).append(pid)
+    return children
+
+
+def _win_tree_from_children(root_pid, children):
+    """从共享父子索引读取 root 及其全部存活后代。"""
     result = []
     stack = [root_pid]
     seen = set()
@@ -886,6 +889,20 @@ def _win_tree_of(root_pid, table):
             result.append(current)
         stack.extend(children.get(current, []))
     return [root_pid] + sorted(result)
+
+
+def _win_tree_of(root_pid, table):
+    """root 及其全部存活后代；单根查询兼容入口。"""
+    return _win_tree_from_children(root_pid, _win_children_map(table))
+
+
+def _win_trees_of(root_pids, table):
+    """为多个受管根 PID 建树；整张进程表只扫描一次。"""
+    children = _win_children_map(table)
+    return {
+        root_pid: _win_tree_from_children(root_pid, children)
+        for root_pid in root_pids
+    }
 
 
 def _win_cwd(pid):
@@ -1575,7 +1592,7 @@ def pgid_members_map(root_pids=None):
         table = _win_process_table()
         roots = (set(int(pid) for pid in root_pids)
                  if root_pids is not None else set(table))
-        return {pid: _win_tree_of(pid, table) for pid in roots}
+        return _win_trees_of(roots, table)
     groups = {}
     for line in run_cmd(["ps", "-axo", "pid=,pgid="]).splitlines():
         parts = line.split()

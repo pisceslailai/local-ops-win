@@ -14,6 +14,8 @@
   - 进程扫描改用本地化无关的 `netstat -ano -p tcp` 解析与 PowerShell CIM；CPU 使用格式化性能计数器，内存使用 WorkingSet 占比。
   - 当前用户边界通过进程访问令牌 SID 指纹校验；无法确认所有者的进程拒绝认领、关联和结束。
   - 受控进程模型改为「锚点进程 + 随机 token 命令行 + PPID 后代树」：`tools/win_anchor.py` 以临时 `.cmd` 批处理执行用户命令，等整棵进程树清空后以原退出码退出，等价于 macOS 的 bash 包装语义。
+  - Windows 锚点使用进程内 Toolhelp32 快照追踪 PPID 后代，正常轮询不再每两秒启动 PowerShell/CIM；多个受管根 PID 共享同一父子索引，避免重复扫描整张进程表。
+  - 锚点批处理移入 `%TEMP%\local-ops-console-anchor` 专属目录并带 PID/产品签名；正常退出和启动失败立即删除，强制终止遗留由后续锚点在确认原 PID 已死亡后安全清理。
   - 停止应用用 `taskkill /T`（先优雅、失败自动升级 `/F` 树杀）；`pid_alive` 改用 OpenProcess + GetExitCodeProcess（`os.kill(pid,0)` 在 Windows 上对已退出进程仍返回成功）。
   - 实例锁改用 `msvcrt.locking` 回退（fcntl 仅 POSIX）；数据目录默认 `%APPDATA%\总控台` 与 `%LOCALAPPDATA%\总控台\Logs`。
   - 工作目录经 PEB 只读读取（`NtQueryInformationProcess`，ctypes）；文件/目录选择框用 PowerShell + WinForms。

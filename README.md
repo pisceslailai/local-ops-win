@@ -90,7 +90,10 @@ python3 server.py --preferred-port 9603  # 在 9600-9609 内指定优先端口
   “锚点”进程承载（`tools/win_anchor.py`，命令行带随机 token），用户命令
   写入临时 `.cmd` 批处理文件后由 `cmd /c` 执行——这是 Windows 上能原样
   执行任意命令的唯一稳妥通道。受控身份 = 锚点 PID + token 命令行 +
-  PPID 后代树；锚点会等到整棵进程树清空才退出（等价于 macOS 的 `wait`）。
+  PPID 后代树；锚点通过进程内 Toolhelp32 快照等待整棵进程树清空后退出
+  （等价于 macOS 的 `wait`），正常轮询不再反复启动 PowerShell。批处理集中在
+  `%TEMP%\local-ops-console-anchor` 专属目录：正常退出和启动失败立即删除；若被
+  强制终止，后续锚点只会清理带产品签名且原锚点 PID 已死亡的文件。
 - **停止语义**：Windows 没有 SIGTERM。点“停止”会先尝试 `taskkill /T`
   （仅对带窗口进程有效），失败自动升级为 `taskkill /T /F` 强制结束整棵
   进程树。因此被停止的应用不会收到优雅退出通知，正在写入的数据可能丢失。

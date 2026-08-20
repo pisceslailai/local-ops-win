@@ -16,6 +16,7 @@ import unittest
 from unittest import mock
 
 import server
+from tools import win_anchor
 
 
 def _free_port():
@@ -88,6 +89,23 @@ class WindowsParsingTests(unittest.TestCase):
         cyclic = server._win_tree_of(6, table)
         self.assertEqual(set(cyclic), {6, 7})
 
+    def test_win_trees_scan_process_table_once_for_multiple_roots(self):
+        class CountingTable(dict):
+            items_calls = 0
+
+            def items(self):
+                self.items_calls += 1
+                return super().items()
+
+        table = CountingTable({
+            1: {"ppid": 0}, 2: {"ppid": 1}, 3: {"ppid": 2},
+            10: {"ppid": 0}, 11: {"ppid": 10},
+        })
+        trees = server._win_trees_of({1, 10}, table)
+        self.assertEqual(trees[1], [1, 2, 3])
+        self.assertEqual(trees[10], [10, 11])
+        self.assertEqual(table.items_calls, 1)
+
     def test_netstat_fallback_does_not_depend_on_localized_state(self):
         text = (
             "TCP  0.0.0.0:9600  0.0.0.0:0  ABHÖREN  1234\n"
@@ -120,6 +138,106 @@ class WindowsParsingTests(unittest.TestCase):
 
 @unittest.skipIf(not server.IS_WIN, "Windows 适配层专属测试")
 class WindowsProcessTests(unittest.TestCase):
+    def test_anchor_batch_is_scoped_tagged_and_preserves_exit_code(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = win_anchor._batch_file(
+                'python -c "import sys; sys.exit(7)"', directory=td)
+            self.assertEqual(os.path.dirname(path), td)
+            with open(path, "rb") as handle:
+                self.assertEqual(
+                    handle.read(len(win_anchor.BATCH_MARKER)),
+                    win_anchor.BATCH_MARKER)
+            result = subprocess.run(
+                ["cmd", "/d", "/c", path], timeout=20)
+            self.assertEqual(result.returncode, 7)
+            self.assertTrue(os.path.exists(path))
+
+    def test_anchor_cleanup_only_removes_dead_owned_files(self):
+        with tempfile.TemporaryDirectory() as td:
+            dead = os.path.join(td, "anchor-111-deadbeef.cmd")
+            active = os.path.join(td, "anchor-222-cafebabe.cmd")
+            unrelated = os.path.join(td, "somebody-333-deadbeef.cmd")
+            for path in (dead, active, unrelated):
+                with open(path, "wb") as handle:
+                    handle.write(win_anchor.BATCH_MARKER + b"\r\n")
+
+            removed = win_anchor._cleanup_stale_batches(
+                directory=td, active_pids={222})
+
+            self.assertEqual(removed, 1)
+            self.assertFalse(os.path.exists(dead))
+            self.assertTrue(os.path.exists(active))
+            self.assertTrue(os.path.exists(unrelated))
+
+    def test_anchor_cleanup_fails_closed_when_snapshot_fails(self):
+        with tempfile.TemporaryDirectory() as td:
+            stale = os.path.join(td, "anchor-111-deadbeef.cmd")
+            with open(stale, "wb") as handle:
+                handle.write(win_anchor.BATCH_MARKER + b"\r\n")
+            with mock.patch.object(
+                    win_anchor, "_snapshot_ppids", side_effect=OSError), \
+                    mock.patch.object(
+                        win_anchor, "_snapshot_ppids_powershell",
+                        side_effect=OSError):
+                removed = win_anchor._cleanup_stale_batches(directory=td)
+            self.assertEqual(removed, 0)
+            self.assertTrue(os.path.exists(stale))
+
+    def test_anchor_main_cleans_stale_and_cleans_launch_failure(self):
+        with tempfile.TemporaryDirectory() as td:
+            stale = os.path.join(td, "anchor-111-deadbeef.cmd")
+            with open(stale, "wb") as handle:
+                handle.write(win_anchor.BATCH_MARKER + b"\r\n")
+            with mock.patch.object(
+                    win_anchor.sys, "argv",
+                    ["win_anchor.py", "console-run:test", "echo ok"]), \
+                    mock.patch.object(
+                        win_anchor, "_anchor_temp_dir", return_value=td), \
+                    mock.patch.object(
+                        win_anchor, "_snapshot_ppids",
+                        return_value={os.getpid(): 0}), \
+                    mock.patch.object(
+                        win_anchor.subprocess, "Popen",
+                        side_effect=OSError("launch failed")):
+                result = win_anchor.main()
+            self.assertEqual(result, 1)
+            self.assertFalse(os.path.exists(stale))
+            self.assertEqual(os.listdir(td), [])
+
+    def test_anchor_native_snapshot_contains_current_process(self):
+        snapshot = win_anchor._snapshot_ppids()
+        self.assertIn(os.getpid(), snapshot)
+        self.assertIsInstance(snapshot[os.getpid()], int)
+
+    def test_anchor_native_snapshot_reads_child_parent(self):
+        proc = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(20)"])
+        try:
+            snapshot = win_anchor._snapshot_ppids()
+            self.assertEqual(snapshot.get(proc.pid), os.getpid())
+        finally:
+            proc.kill()
+            proc.wait()
+
+    def test_anchor_descendant_scan_uses_native_snapshot(self):
+        with mock.patch.object(
+                win_anchor, "_snapshot_ppids",
+                return_value={100: 0, 101: 100, 102: 101}), \
+                mock.patch.object(
+                    win_anchor, "_snapshot_ppids_powershell") as fallback:
+            self.assertTrue(win_anchor._live_descendants(100))
+            self.assertFalse(win_anchor._live_descendants(999))
+        fallback.assert_not_called()
+
+    def test_anchor_snapshot_falls_back_conservatively(self):
+        with mock.patch.object(
+                win_anchor, "_snapshot_ppids", side_effect=OSError("native")), \
+                mock.patch.object(
+                    win_anchor, "_snapshot_ppids_powershell",
+                    return_value={100: 0, 101: 100}) as fallback:
+            self.assertTrue(win_anchor._live_descendants(100))
+        fallback.assert_called_once_with()
+
     def test_pid_alive_detects_exit(self):
         proc = subprocess.Popen([sys.executable, "-c",
                                  "import time; time.sleep(30)"])
