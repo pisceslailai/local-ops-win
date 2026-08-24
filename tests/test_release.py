@@ -184,6 +184,7 @@ class ProjectReleaseManifestTests(unittest.TestCase):
         self.assertIn("docs/screenshots/ops-launchpad.jpg", names)
         self.assertIn("docs/screenshots/ops-services.jpg", names)
         self.assertIn("start.bat", names)
+        self.assertIn("tools/start_hidden.vbs", names)
         self.assertIn("tools/win_anchor.py", names)
         self.assertIn("tests/test_windows.py", names)
 
@@ -192,6 +193,12 @@ class ProjectReleaseManifestTests(unittest.TestCase):
         self.assertIn('cd /d "%~dp0"', content)
         self.assertIn("py -3 server.py --launcher %*", content)
         self.assertIn("python server.py --launcher %*", content)
+
+    def test_windows_hidden_launcher_is_codepage_safe(self):
+        content = (release.ROOT / "tools/start_hidden.vbs").read_bytes().decode("ascii")
+        self.assertIn("WScript.Shell", content)
+        self.assertIn("start.bat", content)
+        self.assertIn("False", content)
 
     def test_required_third_party_licenses_are_in_payload(self):
         names = {
