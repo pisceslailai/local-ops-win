@@ -103,7 +103,10 @@ sideNav.addEventListener('keydown', e => {
    轮询
    ============================================================ */
 const POLL_INTERVAL_MS = 2000;
-const POLL_TIMEOUT_MS = 7000;
+// Windows 状态扫描可能偶发经过 PowerShell/CIM，允许一次扫描稍慢，
+// 避免把短暂的系统调度抖动误报成总控台失联。
+const POLL_TIMEOUT_MS = 15000;
+let consecutivePollFailures = 0;
 let pollPromise = null;
 let pollController = null;
 let pollTimer = null;
@@ -132,6 +135,7 @@ function poll(force = false) {
         throw error;
       }
       const data = await r.json();
+      consecutivePollFailures = 0;
       /* 请求发出期间发生了写操作：这份快照是操作生效前的旧状态，
          丢弃并立即补一轮，避免卡片短暂回退到旧状态。 */
       if (epochAtStart !== currentMutationEpoch()) {
@@ -163,9 +167,12 @@ function poll(force = false) {
       suspendPortDiscovery();
       resetFeedBaseline();
       if (e && e.name !== 'AbortError') console.error('状态刷新失败', e);
+      consecutivePollFailures += 1;
       /* 页面进入后台时主动取消请求，不把它误报成断连。 */
-      if (!document.hidden || timedOut) {
-        const denied = e.status === 401 || e.status === 403;
+      if ((!document.hidden || timedOut) &&
+          (e && (e.status === 401 || e.status === 403) ||
+           !state.data || consecutivePollFailures >= 2)) {
+        const denied = e && (e.status === 401 || e.status === 403);
         setConnected(false, denied ? '控制台拒绝了当前页面的访问，请重新打开总控台。' : '');
       }
     } finally {

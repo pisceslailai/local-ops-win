@@ -249,6 +249,12 @@ class FrontendAccessibilityContractTests(unittest.TestCase):
         self.assertIn("observePortDiscovery(data)", app)
         self.assertIn("suspendPortDiscovery()", app)
 
+    def test_state_poll_tolerates_transient_windows_scan_delay(self):
+        app = (ROOT / "static/app.js").read_text(encoding="utf-8")
+        self.assertIn("const POLL_TIMEOUT_MS = 15000", app)
+        self.assertIn("let consecutivePollFailures = 0", app)
+        self.assertIn("consecutivePollFailures >= 2", app)
+
     def test_port_conflict_dialog_offers_non_destructive_resolution(self):
         html = (ROOT / "static/index.html").read_text(encoding="utf-8")
         launchpad = (ROOT / "static/js/launchpad.js").read_text(encoding="utf-8")

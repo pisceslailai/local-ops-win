@@ -1889,7 +1889,9 @@ def build_state(cfg, console_port, config_health=None):
 # 每次快照要跑约十余个 ps/lsof 子进程。TTL 略大于前端 2s 轮询周期：
 # 单标签页约每 2-3 轮重建一次，多标签页请求自动合并（锁内构建排队后
 # 第二个请求直接命中缓存）。配置/进程变更时 invalidate 立即失效。
-STATE_CACHE_TTL = 2.2  # 秒
+# Windows 的 netstat/PowerShell 进程扫描比 macOS 的 ps/lsof 更容易偶发
+# 超过一个 2s 轮询周期；稍长缓存既能合并并发请求，也避免前端误报断连。
+STATE_CACHE_TTL = 4.0 if IS_WIN else 2.2  # 秒
 _state_cache_lock = threading.Lock()
 _state_cache = {"mono": 0.0, "state": None}
 
@@ -3477,7 +3479,8 @@ class ConsoleServer(ThreadingHTTPServer):
         """空闲连接超时 / 客户端中途断开属正常现象，不刷 traceback。"""
         exc_type, exc, _ = sys.exc_info()
         if exc_type and isinstance(exc, (TimeoutError, BrokenPipeError,
-                                         ConnectionResetError)):
+                                         ConnectionResetError,
+                                         ConnectionAbortedError)):
             return
         super().handle_error(request, client_address)
 
@@ -3696,7 +3699,8 @@ class Handler(BaseHTTPRequestHandler):
         if body:
             try:
                 self.wfile.write(body)
-            except (BrokenPipeError, ConnectionResetError):
+            except (BrokenPipeError, ConnectionResetError,
+                    ConnectionAbortedError):
                 pass
 
     def send_json(self, obj, status=200):
@@ -3779,7 +3783,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.serve_icon(path)
                 return
             self.serve_static(path)
-        except (BrokenPipeError, ConnectionResetError):
+        except (BrokenPipeError, ConnectionResetError,
+                ConnectionAbortedError):
             pass
         except Exception as e:
             self._handle_request_error("GET", e)
@@ -3923,7 +3928,8 @@ class Handler(BaseHTTPRequestHandler):
                     self.handle_fetch_favicon(app_id)
                     return
             self.send_err(404, "接口不存在")
-        except (BrokenPipeError, ConnectionResetError):
+        except (BrokenPipeError, ConnectionResetError,
+                ConnectionAbortedError):
             pass
         except Exception as e:
             self._handle_request_error("POST", e)
@@ -4469,7 +4475,8 @@ class Handler(BaseHTTPRequestHandler):
                 updated = dict(updated)
                 updated["stoppedForUpdate"] = True
             self.send_json(updated)
-        except (BrokenPipeError, ConnectionResetError):
+        except (BrokenPipeError, ConnectionResetError,
+                ConnectionAbortedError):
             pass
         except Exception as e:
             self._handle_request_error("PUT", e)
@@ -4496,7 +4503,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.handle_icon_delete(app_id)
                 return
             self.send_err(404, "接口不存在")
-        except (BrokenPipeError, ConnectionResetError):
+        except (BrokenPipeError, ConnectionResetError,
+                ConnectionAbortedError):
             pass
         except Exception as e:
             self._handle_request_error("DELETE", e)
