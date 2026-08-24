@@ -1071,6 +1071,42 @@ class IconTests(unittest.TestCase):
 
 
 class ConsoleRestartTests(unittest.TestCase):
+    def test_open_console_url_falls_back_to_windows_shell(self):
+        url = "http://127.0.0.1:9600/"
+        with mock.patch.object(server, "IS_WIN", True), \
+                mock.patch.object(server.os, "startfile",
+                               create=True,
+                               side_effect=OSError("no shell")), \
+                mock.patch.object(server.webbrowser, "open",
+                                   return_value=False), \
+                mock.patch.object(server.subprocess, "Popen") as popen:
+            self.assertTrue(server.open_console_url(9600))
+        command = popen.call_args.args[0]
+        self.assertEqual(command[:4], ["cmd.exe", "/d", "/c", "start"])
+        self.assertEqual(command[-1], url)
+
+    @unittest.skipUnless(server.IS_WIN, "Windows launcher stream test")
+    def test_windows_launcher_redirect_works_without_console_handles(self):
+        with tempfile.TemporaryDirectory() as td:
+            old_dir = server.LOGS_DIR
+            old_stdout, old_stderr = sys.stdout, sys.stderr
+            old_log_stream = server._LAUNCHER_LOG_STREAM
+            server.LOGS_DIR = td
+            try:
+                server.redirect_console_output()
+                self.assertIs(sys.stdout, sys.stderr)
+                sys.stdout.write("hidden-launch-ok\n")
+                sys.stdout.flush()
+            finally:
+                stream = server._LAUNCHER_LOG_STREAM
+                sys.stdout, sys.stderr = old_stdout, old_stderr
+                server.LOGS_DIR = old_dir
+                server._LAUNCHER_LOG_STREAM = old_log_stream
+                if stream is not None and stream is not old_log_stream:
+                    stream.close()
+            with open(os.path.join(td, "console.log"), encoding="utf-8") as handle:
+                self.assertIn("hidden-launch-ok", handle.read())
+
     def test_instance_discovery_is_limited_to_same_project(self):
         snap = {
             71001: {"uid": server.SELF_UID, "args": "python3 server.py",

@@ -201,6 +201,7 @@ if SELF_UID is None:  # 当前进程令牌正常情况下始终可读；异常�
 ICON_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".ico")
 LOG = logging.getLogger("console")
 LOG_LOCK = threading.RLock()
+_LAUNCHER_LOG_STREAM = None
 MANUAL_STOP_LOCK = threading.RLock()
 MANUAL_STOP_TOKENS = set()
 
@@ -4565,11 +4566,46 @@ class Handler(BaseHTTPRequestHandler):
 
 # ---------------------------------------------------------------- 启动
 
+def open_console_url(port):
+    """在桌面启动场景中打开控制台，并为 Windows 提供可观测兜底。"""
+    url = "http://%s:%d/" % (HOST, int(port))
+    errors = []
+    if IS_WIN:
+        startfile = getattr(os, "startfile", None)
+        if startfile is not None:
+            try:
+                # os.startfile 返回 None 也表示 ShellExecute 已提交，不能
+                # 把返回值当作成功标志。
+                startfile(url)
+                return True
+            except (OSError, AttributeError) as exc:
+                errors.append("ShellExecute: %s" % exc)
+    try:
+        if webbrowser.open(url, new=2, autoraise=True):
+            return True
+    except Exception as exc:  # 浏览器注册表或默认浏览器损坏时兜底
+        errors.append("webbrowser: %s" % exc)
+    if IS_WIN:
+        try:
+            subprocess.Popen(
+                ["cmd.exe", "/d", "/c", "start", "", url],
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            return True
+        except (OSError, ValueError) as exc:
+            errors.append("cmd start: %s" % exc)
+    LOG.warning("无法自动打开控制台浏览器（%s），请手动访问 %s",
+                "; ".join(errors) or "默认浏览器未接受请求", url)
+    return False
+
+
 def open_browser_later(port, delay=0.8):
     def _open():
         try:
             time.sleep(delay)
-            webbrowser.open("http://%s:%d/" % (HOST, port))
+            open_console_url(port)
         except Exception:
             pass
     threading.Thread(target=_open, daemon=True).start()
@@ -4652,7 +4688,7 @@ def launcher_main():
         if instances:
             ports = [p for item in instances for p in item["ports"]]
             port = min(ports) if ports else PORT_START
-            webbrowser.open("http://%s:%d/" % (HOST, port))
+            open_console_url(port)
             return
         try:
             main(log_to_file=True)
@@ -4678,7 +4714,7 @@ def launcher_main():
     if choice == "打开控制台":
         ports = [p for item in instances for p in item["ports"]]
         port = min(ports) if ports else PORT_START
-        webbrowser.open("http://%s:%d/" % (HOST, port))
+        open_console_url(port)
         return
     if choice != "重新启动":
         return
@@ -4790,6 +4826,23 @@ def _run_console(preferred_port=None, open_browser=True):
 def redirect_console_output():
     """在运行目录迁移完成后，将 .app 输出安全追加到 Library Logs。"""
     path = os.path.join(LOGS_DIR, "console.log")
+    if IS_WIN:
+        # 从 .lnk/资源管理器启动时没有可继承的控制台句柄。对 fd 1/2
+        # 调用 dup2 会触发 Python 的 ``lost sys.stderr``，进而让启动器
+        # 在浏览器打开前退出。直接替换 TextIOWrapper 对两种启动方式
+        # 都安全，也保留启动日志和异常回溯。
+        global _LAUNCHER_LOG_STREAM
+        stream = open(path, "a", encoding="utf-8", buffering=1)
+        old_stream = _LAUNCHER_LOG_STREAM
+        _LAUNCHER_LOG_STREAM = stream
+        if old_stream is not None and old_stream is not stream:
+            try:
+                old_stream.close()
+            except OSError:
+                pass
+        sys.stdout = stream
+        sys.stderr = stream
+        return
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     try:
         if hasattr(os, "fchmod"):
@@ -4835,7 +4888,7 @@ def main(preferred_port=None, open_browser=True, log_to_file=False):
             instances = find_console_instances()
             ports = [port for item in instances for port in item.get("ports", [])]
             if ports:
-                webbrowser.open("http://%s:%d/" % (HOST, min(ports)))
+                open_console_url(min(ports))
         return False
     try:
         _run_console(preferred_port, open_browser)
