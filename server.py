@@ -608,11 +608,15 @@ class Config:
                 # 先保存上一份良好内容，再替换主文件。
                 self._write_atomic(self._path + ".bak", previous_payload)
                 self._write_atomic(self._path, payload)
-                invalidate_state_cache()
-                return result
             except Exception:
                 self._data = previous
                 raise
+        # get_state_snapshot 的缓存锁内会读取配置；若这里仍持有配置锁再
+        # 获取缓存锁，两条路径会形成 cfg -> cache / cache -> cfg 的死锁。
+        # 配置已原子落盘，先释放配置锁再失效缓存，旧快照即使正在构建，
+        # 也会在完成后被本次失效立即清除。
+        invalidate_state_cache()
+        return result
 
     @staticmethod
     def _write_atomic(path, payload):

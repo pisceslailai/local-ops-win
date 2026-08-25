@@ -35,7 +35,12 @@ class HttpHarness:
         self.tmp.cleanup()
 
     def request(self, method, path, body=None, headers=None):
-        conn = http.client.HTTPConnection(server.HOST, self.port, timeout=4)
+        # Windows 首次状态请求包含 CIM 全量进程扫描；高进程数机器上可能
+        # 超过 4 秒。测试上限与前端 15 秒容错保持一致，避免性能波动被
+        # 误判成接口死锁；并发死锁由 StateCacheTests 单独精确覆盖。
+        timeout = 15 if server.IS_WIN else 4
+        conn = http.client.HTTPConnection(
+            server.HOST, self.port, timeout=timeout)
         request_headers = dict(headers or {})
         if body is not None and not isinstance(body, (bytes, bytearray)):
             body = body.encode("utf-8")
@@ -912,6 +917,57 @@ class StateCacheTests(unittest.TestCase):
                 cfg.update(lambda d: d.__setitem__("uiTheme", "custom"))
                 server.get_state_snapshot(cfg, 9600)
                 self.assertEqual(len(calls), 2)
+
+    def test_config_update_does_not_deadlock_with_snapshot_build(self):
+        """配置写入与状态重建并发时不得形成 cfg/cache 锁顺序反转。"""
+        with tempfile.TemporaryDirectory() as td:
+            cfg = server.Config(os.path.join(td, "config.json"))
+            state_has_cache_lock = threading.Event()
+            update_has_config_lock = threading.Event()
+            original_snapshot = cfg.snapshot
+            errors = []
+
+            def coordinated_snapshot():
+                state_has_cache_lock.set()
+                if not update_has_config_lock.wait(1):
+                    raise AssertionError("配置更新线程未进入写锁")
+                return original_snapshot()
+
+            def mutate(data):
+                update_has_config_lock.set()
+                if not state_has_cache_lock.wait(1):
+                    raise AssertionError("状态线程未进入缓存锁")
+                data["uiTheme"] = "ops"
+
+            def run(call):
+                try:
+                    call()
+                except BaseException as exc:  # 线程异常回传主测试线程
+                    errors.append(exc)
+
+            cfg.snapshot = coordinated_snapshot
+            with mock.patch.object(
+                    server, "build_state", return_value={"ok": True}):
+                state_thread = threading.Thread(
+                    target=run,
+                    args=(lambda: server.get_state_snapshot(cfg, 9600),),
+                    daemon=True)
+                update_thread = threading.Thread(
+                    target=run,
+                    args=(lambda: cfg.update(mutate),),
+                    daemon=True)
+                state_thread.start()
+                self.assertTrue(state_has_cache_lock.wait(1))
+                update_thread.start()
+                self.assertTrue(update_has_config_lock.wait(1))
+                state_thread.join(2)
+                update_thread.join(2)
+
+            self.assertFalse(state_thread.is_alive(),
+                             "状态线程被配置锁永久阻塞")
+            self.assertFalse(update_thread.is_alive(),
+                             "配置线程被状态缓存锁永久阻塞")
+            self.assertEqual(errors, [])
 
 
 if __name__ == "__main__":
