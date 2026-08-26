@@ -723,6 +723,7 @@ body.dragging-on { cursor: grabbing; user-select: none; -webkit-user-select: non
 .input-row input { flex: 1; }
 .input-row .btn { flex: none; height: 38px; }
 .hint { margin: 8px 0 0; font-family: var(--font-mono); font-size: 10px; color: var(--ink-4); line-height: 1.55; }
+.attach-notice { color: var(--amber); }
 .link-btn { font-size: 12px; font-weight: 600; color: var(--accent); }
 .link-btn:hover:not(:disabled) { text-decoration: underline; text-underline-offset: 3px; }
 .link-btn:disabled { color: var(--ink-4); cursor: default; }

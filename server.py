@@ -717,7 +717,7 @@ def run_cmd(args, timeout=SUBPROCESS_TIMEOUT):
 # 收敛成与 macOS 路径同签名的实现；上层逻辑不做平台分支。
 
 
-def _win_powershell(script, timeout=SUBPROCESS_TIMEOUT):
+def _win_powershell(script, timeout=SUBPROCESS_TIMEOUT, sta=False):
     """运行 PowerShell 并返回 stdout；失败返回空串。
 
     显式把控制台输出编码切到 UTF-8：PowerShell 重定向输出默认用
@@ -725,11 +725,16 @@ def _win_powershell(script, timeout=SUBPROCESS_TIMEOUT):
     中文命令会乱码甚至破坏 JSON。
     """
     try:
+        args = ["powershell", "-NoProfile", "-NonInteractive"]
+        if sta:
+            args.append("-STA")
+        args += [
+            "-ExecutionPolicy", "Bypass", "-Command",
+            "[Console]::OutputEncoding=[Text.Encoding]::UTF8; " + script,
+        ]
         r = subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive",
-             "-ExecutionPolicy", "Bypass", "-Command",
-             "[Console]::OutputEncoding=[Text.Encoding]::UTF8; " + script],
-            capture_output=True, timeout=timeout)
+            args, capture_output=True, timeout=timeout,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         return r.stdout.decode("utf-8", errors="replace") or ""
     except Exception:
         LOG.exception("PowerShell 执行失败")
@@ -1528,6 +1533,13 @@ def build_services(cfg, groups=None):
         name = os.path.basename(comm) if comm else "?"
         key = "%s:%d" % (name, port)
         cwd = cwds.get(pid)
+        cwd_exists = bool(cwd and os.path.isdir(cwd))
+        if not cwd:
+            attach_issue = "无法读取进程工作目录，可能是提权或受保护进程"
+        elif not cwd_exists:
+            attach_issue = "进程工作目录已不存在：%s" % cwd
+        else:
+            attach_issue = None
         app = app_by_pid.get(pid)
         services.append({
             "key": key,
@@ -1537,6 +1549,8 @@ def build_services(cfg, groups=None):
             "pid": pid, "name": name, "port": port,
             "openHost": listener_open_host(listeners, port, {pid}),
             "cwd": cwd, "project": project_name(cwd), "cmd": args,
+            "cwdExists": cwd_exists, "attachable": cwd_exists,
+            "attachIssue": attach_issue,
             "cpu": info["cpu"], "mem": info["mem"], "uptimeSec": info["etime"],
             "group": classify_group(key, name, comm, args, cwd, promoted),
             "pinned": key in pinned, "hidden": key in hidden,
@@ -2295,28 +2309,48 @@ def pick_path(what):
 
 def _pick_path_windows(what):
     """Windows 原生对话框（PowerShell + WinForms）。返回 (path|None, canceled)。"""
+    owner_prefix = (
+        "Add-Type -AssemblyName System.Windows.Forms; "
+        "Add-Type -AssemblyName System.Drawing; "
+        "$owner = New-Object System.Windows.Forms.Form; "
+        "$owner.FormBorderStyle = 'None'; "
+        "$owner.ShowInTaskbar = $false; $owner.TopMost = $true; "
+        "$owner.Opacity = 0; $owner.Size = New-Object System.Drawing.Size(1,1); "
+        "$owner.StartPosition = 'CenterScreen'; $owner.Show(); $owner.Activate(); "
+    )
+    owner_suffix = (
+        " finally { if ($owner) { $owner.Close(); $owner.Dispose() } }"
+    )
     if what == "dir":
         script = (
-            "Add-Type -AssemblyName System.Windows.Forms; "
+            owner_prefix +
             "$f = New-Object System.Windows.Forms.FolderBrowserDialog; "
             "$f.Description = '选择工作目录'; "
             "$f.ShowNewFolderButton = $true; "
-            "if ($f.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) "
-            "{ $f.SelectedPath } else { '__CANCELED__' }")
+            "try { if ($f.ShowDialog($owner) -eq "
+            "[System.Windows.Forms.DialogResult]::OK) "
+            "{ $f.SelectedPath } else { '__CANCELED__' } }" +
+            owner_suffix)
     else:
         script = (
-            "Add-Type -AssemblyName System.Windows.Forms; "
+            owner_prefix +
             "$f = New-Object System.Windows.Forms.OpenFileDialog; "
             "$f.Title = '选择批处理脚本'; "
             "$f.Filter = '脚本文件 (*.py;*.ps1;*.bat;*.cmd;*.sh)|*.py;*.ps1;*.bat;*.cmd;*.sh|所有文件 (*.*)|*.*'; "
-            "if ($f.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) "
-            "{ $f.FileName } else { '__CANCELED__' }")
-    text = _win_powershell(script, timeout=180).strip()
+            "try { if ($f.ShowDialog($owner) -eq "
+            "[System.Windows.Forms.DialogResult]::OK) "
+            "{ $f.FileName } else { '__CANCELED__' } }" +
+            owner_suffix)
+    text = _win_powershell(script, timeout=180, sta=True).strip()
     if not text:
         return None, False
     if text == "__CANCELED__":
         return None, True
-    return text.rstrip("/") or None, False
+    # FolderBrowserDialog normally omits the separator, but normalize a
+    # selected child path while preserving drive roots such as ``D:\``.
+    if len(text) > 3:
+        text = text.rstrip("/\\")
+    return text or None, False
 
 
 def command_for_script(path):
@@ -3021,7 +3055,21 @@ def inspect_attach_process(cfg, app, pid):
         return False, "该进程已由卡片「%s」管理" % owners[pid].get("name", ""), {"status": 409}
     actual_cwd = lsof_cwds({pid}).get(pid)
     if not actual_cwd:
-        return False, "无法读取进程工作目录，已取消认领", {"status": 409}
+        return False, (
+            "无法读取该进程的工作目录，不能自动认领。"
+            "请改为选择工作区后创建启动卡片。"
+        ), {"status": 409}
+    native_windows_path = bool(
+        IS_WIN and (
+            re.match(r"^[A-Za-z]:[\\/]", actual_cwd) or
+            actual_cwd.startswith("\\\\")
+        )
+    )
+    if native_windows_path and not os.path.isdir(actual_cwd):
+        return False, (
+            "该进程的工作目录已不存在：%s。"
+            "请重新选择工作区后创建启动卡片。" % actual_cwd
+        ), {"status": 409}
     return True, None, {"status": 200, "cwd": actual_cwd}
 
 

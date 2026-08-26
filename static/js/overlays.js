@@ -3,12 +3,13 @@
    overlays.js — 浮层：确认框 / 应用编辑模态 / 日志抽屉
    ============================================================ */
 import { $, el, setText, setChildren, icon, escapeHtml,
-  post, put, del, act, toast, openLayer, closeLayer,
+  post, postWithTimeout, put, del, act, toast, openLayer, closeLayer,
   GLYPHS, findApp, bumpMutationEpoch } from './core.js';
 
 /* ---------------- DOM 引用 ---------------- */
 const appModalMask = $('#appModalMask'), appModal = $('#appModal'), appModalTitle = $('#appModalTitle');
 const fName = $('#fName'), fCmd = $('#fCmd'), fCwd = $('#fCwd'), fPort = $('#fPort');
+const attachNotice = $('#attachNotice');
 const kindRow = $('#kindRow'), portField = $('#portField'), fCmdLabel = $('#fCmdLabel');
 const btnPickScript = $('#btnPickScript'), btnPickCwd = $('#btnPickCwd');
 const btnDetectProject = $('#btnDetectProject');
@@ -177,6 +178,21 @@ function renderIconPreview() {
 let modalKind = 'service';
 let detectRequestSeq = 0;
 let detectedPortValue = null;
+const PICK_REQUEST_TIMEOUT_MS = 195000;
+
+function pathDirname(path) {
+  const value = String(path || '');
+  const index = Math.max(value.lastIndexOf('/'), value.lastIndexOf('\\'));
+  if (index < 0) return '';
+  const prefix = value.slice(0, index);
+  return /^[A-Za-z]:$/.test(prefix) ? value.slice(0, index + 1) : prefix;
+}
+
+function pathBasename(path) {
+  const value = String(path || '').replace(/[\\/]+$/, '');
+  const index = Math.max(value.lastIndexOf('/'), value.lastIndexOf('\\'));
+  return index < 0 ? value : value.slice(index + 1);
+}
 
 function readPortValue() {
   const raw = fPort.value.trim();
@@ -226,9 +242,11 @@ function refreshEditSaveMode() {
   appStopEdit.hidden = !running;
   appStopEdit.disabled = appSaving;
   appSave.hidden = false;
-  const willAttach = !editingAppId && pendingAttach && modalKind === 'service'
-    && readPortValue() === pendingAttach.port;
-  setText(appSave, willAttach ? '保存并认领' : '保存');
+  const willAttach = !editingAppId && pendingAttach && pendingAttach.attachable
+    && modalKind === 'service' && readPortValue() === pendingAttach.port;
+  const fallbackCard = !editingAppId && pendingAttach &&
+    !pendingAttach.attachable && modalKind === 'service';
+  setText(appSave, willAttach ? '保存并认领' : fallbackCard ? '保存启动卡片' : '保存');
   appSave.disabled = appSaving || needsStop || (willAttach && detectingProject);
   appSave.title = needsStop ? '请先在当前面板' + stopVerb
     : (willAttach && detectingProject ? '正在识别可靠的项目启动命令' : '');
@@ -264,6 +282,8 @@ export function openAppModal(app, presetKind, focusAction = '') {
         port: Number(app.port),
         instanceKey: app.attachInstanceKey || null,
         command: (app.command || '').trim(),
+        attachable: app.attachable !== false && !!app.cwd,
+        attachIssue: app.attachIssue || '',
       }
     : null;
   editingAppOriginal = app ? {
@@ -280,6 +300,15 @@ export function openAppModal(app, presetKind, focusAction = '') {
   fCwd.value = (app && app.cwd) || '';
   fPort.value = app && app.port != null ? app.port : '';
   [fName, fCmd, fCwd, fPort].forEach(clearFieldError);
+  if (pendingAttach && !pendingAttach.attachable) {
+    attachNotice.hidden = false;
+    attachNotice.textContent = (pendingAttach.attachIssue ||
+      '当前进程的工作目录无法读取') +
+      '。请选择项目文件夹后，可保存为启动卡片；不会自动认领当前进程。';
+  } else {
+    attachNotice.hidden = true;
+    attachNotice.textContent = '';
+  }
   setModalKind(presetKind || (app && app.kind) || 'service');
   appearanceDetails.open = !!(app && (app.icon || app.glyph));
   syncGlyphGrid();
@@ -482,9 +511,13 @@ async function saveApp() {
     glyph: selectedGlyph || null,
     kind: modalKind,
   };
+  if (pendingAttach && !pendingAttach.attachable && !body.cwd) {
+    return fieldError(fCwd, '该进程无法自动读取工作目录，请先选择项目文件夹');
+  }
   const wasCreating = !editingAppId;
   const attachRequest = wasCreating && pendingAttach && modalKind === 'service'
-    && port === pendingAttach.port ? { ...pendingAttach } : null;
+    && pendingAttach.attachable && port === pendingAttach.port
+    ? { ...pendingAttach } : null;
   if (attachRequest) body.attachPid = attachRequest.pid;
   appSaving = true;
   refreshEditSaveMode();
@@ -561,14 +594,15 @@ export function initAppModal({ onAddService, onAddTask }) {
   btnPickScript.addEventListener('click', async () => {
     btnPickScript.disabled = true;
     try {
-      const r = await act(post('/api/pick', { what: 'script' }));
+      const r = await act(postWithTimeout(
+        '/api/pick', { what: 'script' }, PICK_REQUEST_TIMEOUT_MS));
       if (!r || r.canceled || !r.path) return;  // 取消或失败均静默
       const p = r.path;
       fCmd.value = r.command || fallbackScriptCommand(p);
-      const dir = p.slice(0, p.lastIndexOf('/'));
+      const dir = pathDirname(p);
       if (dir && !fCwd.value.trim()) fCwd.value = dir;
       if (!fName.value.trim()) {
-        const base = p.split('/').pop().replace(/\.(command|sh|bash|zsh|py)$/i, '');
+        const base = pathBasename(p).replace(/\.(command|sh|bash|zsh|py|ps1|bat|cmd)$/i, '');
         if (base) fName.value = base;
       }
       fCmd.classList.remove('invalid');
@@ -587,7 +621,8 @@ export function initAppModal({ onAddService, onAddTask }) {
   btnPickCwd.addEventListener('click', async () => {
     btnPickCwd.disabled = true;
     try {
-      const r = await act(post('/api/pick', { what: 'dir' }));
+      const r = await act(postWithTimeout(
+        '/api/pick', { what: 'dir' }, PICK_REQUEST_TIMEOUT_MS));
       if (r && !r.canceled && r.path) {
         fCwd.value = r.path;
         fCwd.classList.remove('invalid');

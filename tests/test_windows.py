@@ -135,6 +135,41 @@ class WindowsParsingTests(unittest.TestCase):
                                        side_effect=fake_which):
                     self.assertEqual(server.command_for_script(path), expected)
 
+    def test_windows_picker_runs_sta_with_foreground_owner(self):
+        with mock.patch.object(
+                server, "_win_powershell", return_value="D:\\workspace\\\r\n") as runner:
+            path, canceled = server._pick_path_windows("dir")
+
+        self.assertFalse(canceled)
+        self.assertEqual(path, "D:\\workspace")
+        runner.assert_called_once()
+        script = runner.call_args.args[0]
+        self.assertIn("ShowDialog($owner)", script)
+        self.assertIn("TopMost", script)
+        self.assertTrue(runner.call_args.kwargs["sta"])
+        self.assertEqual(runner.call_args.kwargs["timeout"], 180)
+
+    def test_unreadable_service_cwd_is_not_attachable(self):
+        listeners = {(4242, 5173)}
+        snapshot = {
+            4242: {"uid": server.SELF_UID, "comm": "node.exe",
+                   "args": "node server.js", "cpu": 0.0, "mem": 0.0,
+                   "etime": 10},
+        }
+        with mock.patch.object(server, "scan_listeners", return_value=listeners), \
+                mock.patch.object(server, "ps_snapshot", return_value=snapshot), \
+                mock.patch.object(server, "lsof_cwds", return_value={4242: "C:\\gone"}), \
+                mock.patch.object(server, "origin_snapshot", return_value={}), \
+                mock.patch.object(server, "listener_app_owners", return_value={}):
+            services, _ = server.build_services({
+                "apps": [], "hidden": [], "pinned": [], "promoted": [],
+            })
+
+        self.assertEqual(len(services), 1)
+        self.assertFalse(services[0]["attachable"])
+        self.assertFalse(services[0]["cwdExists"])
+        self.assertIn("工作目录", services[0]["attachIssue"])
+
 
 @unittest.skipIf(not server.IS_WIN, "Windows 适配层专属测试")
 class WindowsProcessTests(unittest.TestCase):

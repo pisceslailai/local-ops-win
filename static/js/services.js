@@ -136,6 +136,8 @@ function openServiceAppModal(s) {
     name: s.appName || s.project || s.name || '',
     command: s.cmd || '',
     cwd: s.cwd || null,
+    attachable: s.attachable !== false,
+    attachIssue: s.attachIssue || '',
     port: s.port != null ? s.port : null,
     attachPid: s.pid,
     attachInstanceKey: s.instanceKey || null,
@@ -378,6 +380,7 @@ function updateServiceRow(row, svc) {
     button.setAttribute('aria-label', action + '：' + title);
   };
   label(svc.appId ? '编辑启动台应用' : '添加到启动台', r.add);
+  if (!svc.appId && svc.attachable === false) label('配置启动卡片', r.add);
   label('移回应用后台', r.demote);
   label(row.classList.contains('expanded') ? '收起完整命令' : '展开完整命令', r.command);
   label(svc.pinned ? '取消置顶' : '置顶', r.pin);
@@ -447,8 +450,9 @@ function updateDiscoveryRow(row, svc) {
   setText(r.detail, detail ? truncateMiddle(shortHome(detail), 72) : '未能读取工作目录');
   r.detail.title = detail;
   row.classList.remove('is-offline');
-  r.add.textContent = '加入启动台';
-  r.add.setAttribute('aria-label', '将 ' + title + ' 加入启动台');
+  const addLabel = svc.attachable === false ? '配置启动卡片' : '加入启动台';
+  r.add.textContent = addLabel;
+  r.add.setAttribute('aria-label', '将 ' + title + ' ' + addLabel);
   r.ignore.setAttribute('aria-label', '忽略并隐藏 ' + title + ' 的端口 ' + svc.port);
   r.dismiss.setAttribute('aria-label', '暂时关闭 ' + title + ' 的新端口提醒');
 }

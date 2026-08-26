@@ -208,6 +208,17 @@ class FrontendAccessibilityContractTests(unittest.TestCase):
         self.assertIn("willAttach && detectingProject", overlays)
         self.assertIn("已加入启动台并认领正在运行的进程", overlays)
 
+    def test_windows_picker_and_unattachable_service_have_recovery_path(self):
+        core = (ROOT / "static/js/core.js").read_text(encoding="utf-8")
+        overlays = (ROOT / "static/js/overlays.js").read_text(encoding="utf-8")
+        services = (ROOT / "static/js/services.js").read_text(encoding="utf-8")
+        self.assertIn("postWithTimeout", core)
+        self.assertIn("postWithTimeout(", overlays)
+        self.assertIn("'/api/pick'", overlays)
+        self.assertIn("lastIndexOf('\\\\')", overlays)
+        self.assertIn("attachable", overlays)
+        self.assertIn("配置启动卡片", services)
+
     def test_task_outcomes_and_health_have_distinct_ui_contracts(self):
         core = (ROOT / "static/js/core.js").read_text(encoding="utf-8")
         launchpad = (ROOT / "static/js/launchpad.js").read_text(encoding="utf-8")
