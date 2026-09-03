@@ -146,7 +146,8 @@ def _snapshot_ppids_powershell():
          "[Console]::OutputEncoding=[Text.Encoding]::UTF8; "
          "Get-CimInstance Win32_Process | "
          "Select-Object ProcessId,ParentProcessId | ConvertTo-Json -Compress"],
-        capture_output=True, timeout=10)
+        capture_output=True, timeout=10,
+        creationflags=CREATE_NO_WINDOW)
     if out.returncode != 0:
         raise OSError("PowerShell process snapshot failed")
     text = out.stdout.decode("utf-8", errors="replace") or ""

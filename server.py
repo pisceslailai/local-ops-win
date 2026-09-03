@@ -697,11 +697,19 @@ def release_instance_lock(lock_file):
 
 # ---------------------------------------------------------------- 子进程与解析
 
+def hidden_subprocess_kwargs():
+    """Windows 后台命令不得因父进程无控制台而反复弹出黑窗。"""
+    if not IS_WIN:
+        return {}
+    return {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0)}
+
+
 def run_cmd(args, timeout=SUBPROCESS_TIMEOUT):
     """运行命令并返回 stdout；任何异常/超时都返回空串，绝不上抛。"""
     try:
         r = subprocess.run(args, capture_output=True, text=True,
-                           errors="replace", timeout=timeout)
+                           errors="replace", timeout=timeout,
+                           **hidden_subprocess_kwargs())
         return r.stdout or ""
     except Exception:
         LOG.exception("命令执行失败: %r", args)
@@ -725,7 +733,8 @@ def _win_powershell(script, timeout=SUBPROCESS_TIMEOUT):
             ["powershell", "-NoProfile", "-NonInteractive",
              "-ExecutionPolicy", "Bypass", "-Command",
              "[Console]::OutputEncoding=[Text.Encoding]::UTF8; " + script],
-            capture_output=True, timeout=timeout)
+            capture_output=True, timeout=timeout,
+            **hidden_subprocess_kwargs())
         return r.stdout.decode("utf-8", errors="replace") or ""
     except Exception:
         LOG.exception("PowerShell 执行失败")
@@ -973,8 +982,9 @@ def _win_taskkill(pid, tree=True, force=False):
         args.append("/F")
     args += ["/PID", str(int(pid))]
     try:
-        r = subprocess.run(args, capture_output=True, text=True,
-                           errors="replace", timeout=SUBPROCESS_TIMEOUT)
+        r = subprocess.run(
+            args, capture_output=True, text=True, errors="replace",
+            timeout=SUBPROCESS_TIMEOUT, **hidden_subprocess_kwargs())
     except Exception as e:
         return False, "taskkill 失败: %s" % e
     if r.returncode == 0:

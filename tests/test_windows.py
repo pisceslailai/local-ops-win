@@ -27,6 +27,17 @@ def _free_port():
 
 @unittest.skipIf(not server.IS_WIN, "Windows 适配层专属测试")
 class WindowsParsingTests(unittest.TestCase):
+    def test_background_commands_are_created_without_windows(self):
+        self.assertEqual(
+            server.hidden_subprocess_kwargs().get("creationflags"),
+            subprocess.CREATE_NO_WINDOW)
+        completed = subprocess.CompletedProcess([], 0, stdout=b"ok")
+        with mock.patch.object(server.subprocess, "run",
+                               return_value=completed) as run:
+            self.assertEqual(server._win_powershell("Write-Output ok"), "ok")
+        self.assertEqual(run.call_args.kwargs["creationflags"],
+                         subprocess.CREATE_NO_WINDOW)
+
     def test_netstat_parse(self):
         text = (
             "\n"
