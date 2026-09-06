@@ -88,8 +88,9 @@ python3 server.py --preferred-port 9603  # 在 9600-9609 内指定优先端口
 
 - **受控进程模型**：Windows 没有进程组/信号。每个应用由一个小型 Python
   “锚点”进程承载（`tools/win_anchor.py`，命令行带随机 token），用户命令
-  写入临时 `.cmd` 批处理文件后由 `cmd /c` 执行——这是 Windows 上能原样
-  执行任意命令的唯一稳妥通道。受控身份 = 锚点 PID + token 命令行 +
+  按编辑面板的“执行方式”运行：CMD 写入 UTF-8 临时 `.cmd` 并切换代码页；
+  Windows PowerShell 5.1 直接执行编码后的命令，避免 CMD 二次解析。
+  旧配置继续使用 CMD。受控身份 = 锚点 PID + token 命令行 +
   PPID 后代树；锚点通过进程内 Toolhelp32 快照等待整棵进程树清空后退出
   （等价于 macOS 的 `wait`），正常轮询不再反复启动 PowerShell。批处理集中在
   `%TEMP%\local-ops-console-anchor` 专属目录：正常退出和启动失败立即删除；若被
@@ -103,7 +104,8 @@ python3 server.py --preferred-port 9603  # 在 9600-9609 内指定优先端口
   的进程不会被认领、关联或结束。
 - **工作目录读取**：通过 `NtQueryInformationProcess` 读 PEB（ctypes，
   只读）；同架构进程可读，被拒绝访问时该进程不显示目录。
-- **文件选择框**：PowerShell + WinForms 原生对话框（目录/文件）。
+- **文件选择框**：PowerShell STA + WinForms 原生对话框（目录/文件），使用临时置顶所属窗口。
+  选择框出现在 Windows 桌面，取消不修改表单。可停留 180 秒，前端等待时间与其匹配。
 - **系统通知**：任务完成通知由浏览器 Web Notification 实现，两平台一致。
 - **数据目录**：Windows 默认 `%APPDATA%\总控台`（配置/图标）与
   `%LOCALAPPDATA%\总控台\Logs`（日志）；同样支持
@@ -111,6 +113,19 @@ python3 server.py --preferred-port 9603  # 在 9600-9609 内指定优先端口
   目录/文件安全由 NTFS ACL 保障（健康检查会自动跳过权限位校验）。
 - **启动台自动识别**：Windows 上 Python 项目使用 `python`/`py -3` 运行器，
   并额外识别 `start.bat`/`dev.bat`/`start.cmd`/`start.ps1` 等启动脚本。
+
+### Windows 命令怎么写
+
+添加或编辑项目时，“执行方式”决定命令语法。它不会因为你从 PowerShell 启动总控台而自动切换。
+
+| 执行方式 | 示例 | 注意 |
+| --- | --- | --- |
+| CMD（默认） | `set "PORT=3000" && npm run dev` | 按批处理语法执行；多行调用 `.bat`、`.cmd`、`npm`、`pnpm` 后还要执行下一行时，使用 `call npm run build`。 |
+| Windows PowerShell 5.1 | `$env:PORT='3000'; npm run dev` | 使用 PowerShell 语法；5.1 不支持 `&&`，含空格的脚本路径用 `& 'C:\我的项目\任务.ps1'`。 |
+
+“选择脚本”会按当前执行方式生成带正确引号的命令，并填入脚本目录和名称；项目识别的候选命令会同时选择对应执行方式。切换执行方式后请检查已有命令语法。
+中文路径和日志按 UTF-8 处理；Windows PowerShell 5.1 的中文 `.ps1` 文件建议保存为 UTF-8 BOM。
+任务在后台运行，输出进入日志，不提供终端输入；需要 `input()`、`Read-Host` 或菜单交互的脚本，请先改用命令行参数，或在自己的终端运行。
 
 ## 使用
 

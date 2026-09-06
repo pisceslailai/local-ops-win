@@ -136,7 +136,7 @@ class WindowsParsingTests(unittest.TestCase):
             ("C:\\path\\job.ps1", None,
              'powershell -NoProfile -ExecutionPolicy Bypass -File "C:\\path\\job.ps1"'),
             ("C:\\path\\job.sh", "bash", 'bash -- "C:\\path\\job.sh"'),
-            ("C:\\path\\job.sh", None, '"C:\\path\\job.sh"'),
+            ("C:\\path\\job.sh", None, 'bash -- "C:\\path\\job.sh"'),
         ]
         for path, which_result, expected in cases:
             with self.subTest(path=path, which=which_result):
@@ -146,9 +146,145 @@ class WindowsParsingTests(unittest.TestCase):
                                        side_effect=fake_which):
                     self.assertEqual(server.command_for_script(path), expected)
 
+    def test_health_preserves_windows_paths_and_cmd_builtins(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, "中文 task.py")
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write("raise RuntimeError('never execute in health check')")
+            for command in ('python "' + path + '"', 'python .\\task.py'):
+                if command.endswith('.\\task.py'):
+                    with open(os.path.join(td, 'task.py'), 'w') as handle:
+                        handle.write('')
+                self.assertFalse(server.inspect_app_health(
+                    {"command": command, "cwd": td})["blocking"])
+            for command in ('DIR', 'set "PORT=3000"'):
+                self.assertFalse(server.inspect_app_health(
+                    {"command": command, "cwd": td})["blocking"])
+            os.remove(path)
+            health = server.inspect_app_health({"command": 'python "' + path + '"', "cwd": td})
+            self.assertEqual(health['issues'][0]['kind'], 'script-missing')
+
+    def test_powershell_commands_are_not_mistaken_for_missing_executables(self):
+        health = server.inspect_app_health({
+            'shell': 'powershell', 'command': "Write-Output '中文'; $env:PORT='3000'"})
+        self.assertEqual(health['status'], 'unknown')
+        self.assertFalse(health['blocking'])
+
+    def test_powershell_file_target_is_checked(self):
+        with tempfile.TemporaryDirectory() as td:
+            missing = os.path.join(td, '不存在.ps1')
+            for shell in ('cmd', 'powershell'):
+                health = server.inspect_app_health({'shell': shell, 'command': server.command_for_script(missing, shell), 'cwd': td})
+                self.assertEqual(health['issues'][0]['kind'], 'script-missing')
+
+    def test_detect_ps1_uses_interpreter(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, 'start.ps1')
+            with open(path, 'w') as handle:
+                handle.write('exit 0')
+            result, error = server.detect_project(td)
+            self.assertIsNone(error)
+            candidate = next(c for c in result['candidates'] if c['source'] == 'start.ps1')
+            self.assertEqual(candidate['command'], server.command_for_script(path))
+            self.assertEqual(candidate['shell'], 'cmd')
+
+    def test_explicit_cmd_runtime_can_be_resolved_from_path(self):
+        with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as bin_dir:
+            path = os.path.join(bin_dir, 'npm.cmd')
+            with open(path, 'w') as handle:
+                handle.write('@exit /b 0')
+            with mock.patch.object(server.shutil, 'which', return_value=path):
+                self.assertFalse(server.inspect_app_health({'cwd': td, 'command': 'npm.cmd run dev'})['blocking'])
+
+    def test_chinese_package_script_names_use_cmd_quotes(self):
+        with tempfile.TemporaryDirectory() as td:
+            with open(os.path.join(td, 'package.json'), 'w', encoding='utf-8') as handle:
+                json.dump({'scripts': {'dev:中文': 'vite'}}, handle)
+            result, error = server.detect_project(td)
+            self.assertIsNone(error)
+            self.assertTrue(any('"dev:中文"' in c['command'] for c in result['candidates']))
+
+    def test_windows_parser_defers_expansion_and_mixed_quotes(self):
+        for command in ('echo %PATH%', 'echo !PATH!', 'echo "a"b', 'echo ok && dir'):
+            self.assertIsNone(server._simple_command_tokens(command))
+        self.assertEqual(server._simple_command_tokens(r'python C:\test\job.py'),
+                         ['python', r'C:\test\job.py'])
+
+    def test_picker_uses_topmost_owner_and_sta(self):
+        with mock.patch.object(server, '_win_powershell', return_value='__CANCELED__') as run:
+            self.assertEqual(server._pick_path_windows('dir'), (None, True))
+            script = run.call_args.args[0]
+            self.assertIn('$owner.TopMost = $true', script)
+            self.assertIn('$f.ShowDialog($owner)', script)
+            self.assertIn('finally', script)
+        with mock.patch.object(server.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, stdout=b'ok')) as run:
+            server._win_powershell('Write-Output ok')
+            self.assertIn('-STA', run.call_args.args[0])
+
+    def test_shell_is_validated_and_persisted(self):
+        for shell in ('cmd', 'powershell'):
+            fields, error = server.validate_app_fields({'shell': shell}, partial=True)
+            self.assertIsNone(error)
+            self.assertEqual(fields['shell'], shell)
+        self.assertIsNotNone(server.validate_app_fields({'shell': 'bash'}, partial=True)[1])
+        self.assertEqual(server.app_shell({}), 'cmd')
+        config = server.Config._normalize({'apps': [{'id': 'deadbeef', 'shell': 'powershell'}]})
+        self.assertEqual(config['apps'][0]['shell'], 'powershell')
+
 
 @unittest.skipIf(not server.IS_WIN, "Windows 适配层专属测试")
 class WindowsProcessTests(unittest.TestCase):
+    def run_task(self, command, shell, directory):
+        with mock.patch.object(server, 'LOGS_DIR', directory):
+            app = {'id': 'testtask', 'command': command, 'shell': shell, 'cwd': directory, 'kind': 'task'}
+            ok, error, proc, _, _ = server.start_app(app)
+            self.assertTrue(ok, error)
+            try:
+                return proc.wait(timeout=20)
+            finally:
+                if proc.poll() is None:
+                    server.stop_pid_tree(proc.pid)
+                    proc.wait(timeout=10)
+
+    def test_both_shells_preserve_success_failure_and_cancellation(self):
+        with tempfile.TemporaryDirectory() as td:
+            for shell in ('cmd', 'powershell'):
+                for code in (0, 7, 130):
+                    with self.subTest(shell=shell, code=code):
+                        command = 'python -c "import sys; sys.exit(%d)"' % code
+                        self.assertEqual(self.run_task(command, shell, td), code)
+            self.assertEqual(self.run_task("throw 'expected error'", 'powershell', td), 1)
+
+    def test_unicode_script_paths_and_logs_in_both_shells(self):
+        with tempfile.TemporaryDirectory(prefix='总控台 测试 ') as td:
+            path = os.path.join(td, "中文 & 空格's %PATH% !.py")
+            with open(path, 'w', encoding='utf-8') as handle:
+                handle.write("print('中文运行成功')\nraise SystemExit(130)\n")
+            for shell in ('cmd', 'powershell'):
+                with self.subTest(shell=shell):
+                    self.assertEqual(self.run_task(server.command_for_script(path, shell), shell, td), 130)
+            with open(os.path.join(td, 'testtask.log'), encoding='utf-8') as handle:
+                self.assertEqual(handle.read().count('中文运行成功'), 2)
+
+    def test_ps1_and_batch_scripts_execute_and_keep_exit_code(self):
+        with tempfile.TemporaryDirectory(prefix='中文 脚本 ') as td:
+            for suffix, source in (('.ps1', "Write-Output '中文输出'; exit 7"),
+                                   ('.cmd', '@echo off\necho 中文输出\nexit /b 7\n')):
+                path = os.path.join(td, '脚本 test' + suffix)
+                with open(path, 'w', encoding='utf-8-sig' if suffix == '.ps1' else 'utf-8') as handle:
+                    handle.write(source)
+                for shell in ('cmd', 'powershell'):
+                    with self.subTest(suffix=suffix, shell=shell):
+                        self.assertEqual(self.run_task(server.command_for_script(path, shell), shell, td), 7)
+
+    def test_cmd_batch_uses_single_crlf_and_utf8(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = win_anchor._batch_file('echo 中文\r\necho done', td)
+            with open(path, 'rb') as handle:
+                content = handle.read()
+            self.assertNotIn(b'\r\r\n', content)
+            self.assertIn('echo 中文'.encode('utf-8'), content)
+
     def test_anchor_batch_is_scoped_tagged_and_preserves_exit_code(self):
         with tempfile.TemporaryDirectory() as td:
             path = win_anchor._batch_file(

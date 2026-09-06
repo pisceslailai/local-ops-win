@@ -77,7 +77,7 @@
 
 ### 启动台应用
 - `POST /api/apps` `{name, command, cwd?, port?, emoji?, glyph?, kind?, attachPid?}` → app 对象（`kind` 缺省 `service`；`task` 强制 port=null；服务监控来源可带 `attachPid`，后端先校验 PID/端口/UID/cwd，再将卡片与运行身份一次写入，失败不创建半成品卡片）
-- `POST /api/pick` `{what: "dir"|"script"}` → `{ok, path}` / `{ok, canceled:true}`（osascript 弹 macOS 原生目录/文件选择框；取消不是错误）
+- `POST /api/pick` `{what: "dir"|"script", shell?}` → `{ok, path, command?, cwd?, name?}` / `{ok, canceled:true}`（macOS 用 osascript；Windows 用 PowerShell STA + WinForms 临时置顶 owner。脚本命令按指定 shell 生成，取消不是错误；选择框等待 180 秒，前端请求等待 190 秒）
 - `POST /api/project/detect` `{cwd}` → `{ok, cwd, name, files, candidates:[{command,label,source,port,kind,detail}]}`（只读分析项目根目录，不执行项目代码；识别 package.json scripts 与包管理器锁文件、Hexo/Hugo/Jekyll、Django/FastAPI/Flask/Streamlit、Docker Compose、Go、Rust、常用启动脚本及纯静态站点。Hexo 无 scripts 时仍返回 `hexo s` 服务与 `hexo cl` 任务）
 - `POST /api/apps/reorder` `{ids: [...]}` → `{ok}`（按 ids 重排 apps 数组；Python sort 稳定，未涉及的 id 相对顺序不变，服务/任务两区可独立拖拽排序互不干扰）
 - `PUT /api/apps/{id}`（部分更新同字段，可带 `stopBeforeUpdate:true`）→ app 对象；运行中修改 command/cwd/port/kind 时，缺少该标记返回 `{ok:false, requiresStop:true}`，带标记则安全停止后原子保存
@@ -101,6 +101,9 @@
 `GET /` → `static/index.html`；`/app.js`、`/js/*`、`/themes/*`、`/assets/*`、`/fonts/*` 等映射 `static/`；`/icons/xxx` → Application Support 的 `icons/xxx`。防路径穿越。
 
 ## 后端实现要点
+
+- **执行方式**：应用可保存 `shell`，Windows 为 `cmd|powershell`，macOS 为 `bash`；旧配置 null/缺省保留 Windows CMD / macOS Bash。`shell` 随 `/api/state` 返回，属于运行中修改需先停止的生命周期字段。Windows CMD 写入 UTF-8 临时批处理（单 CRLF、`chcp 65001`、`/v:off`），自动生成路径的 `%` 转为 `%%`；PowerShell 5.1 通过 EncodedCommand 直接运行，保留原生退出码并将异常归为失败。锚点必须显式传递 stdout/stderr，避免 CREATE_NO_WINDOW 下子进程日志丢失。后台任务 stdin 为 DEVNULL，不提供交互终端。
+- **Windows 健康检查**：CMD 简单命令按 Windows 双引号解析，保留反斜杠；PowerShell 仅检查明确的脚本路径，其余表达式/cmdlet 返回 unknown，不得按 Bash 或 PATH 错误阻断。项目识别候选包含对应 `shell`；`.ps1` 必须带解释器或使用 PowerShell 的 `&`。
 
 - **平台适配层**：macOS 与 Windows 共用全部上层逻辑，平台差异收敛在少量同签名函数里（`IS_WIN` 分支）：扫描（`lsof`/`ps` ↔ `netstat`/PowerShell CIM）、受控进程模型（pgid ↔ PPID 后代树 + `tools/win_anchor.py` 锚点；锚点用 Toolhelp32 原生快照避免常态 PowerShell 轮询）、停止（`killpg` ↔ `taskkill /T[/F]`）、存活判定（`os.kill(pid,0)` ↔ OpenProcess+GetExitCodeProcess）、cwd（lsof ↔ PEB 读取）、文件选择框（osascript ↔ PowerShell WinForms）、实例锁（flock ↔ msvcrt.locking）、数据目录（`~/Library/...` ↔ `%APPDATA%`/`%LOCALAPPDATA%`）。修改平台相关代码时须保证两平台语义等价并在两平台跑测试。
 - **端口扫描**：`lsof -iTCP -sTCP:LISTEN -P -n`（Windows：`netstat -ano -p tcp`），按 `(pid, port)` 去重（IPv4/6 重复行）。lsof 的 COMMAND 列会截断，名称以 ps 的 comm 为准。

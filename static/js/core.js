@@ -135,7 +135,9 @@ export function bumpMutationEpoch() { mutationEpoch += 1; }
 
 async function req(method, path, body) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  // 原生选择框允许用户停留 180 秒；不能套用普通操作的短超时。
+  const timer = setTimeout(() => controller.abort(),
+    path === '/api/pick' ? 190000 : REQUEST_TIMEOUT_MS);
   const opt = { method, signal: controller.signal };
   if (body !== undefined) {
     opt.headers = { 'Content-Type': 'application/json' };
@@ -518,4 +520,3 @@ export function applyUiTheme(name, persist = false) {
   });
   return queued;
 }
-

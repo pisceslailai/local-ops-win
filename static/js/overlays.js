@@ -4,11 +4,21 @@
    ============================================================ */
 import { $, el, setText, setChildren, icon, escapeHtml,
   post, put, del, act, toast, openLayer, closeLayer,
-  GLYPHS, findApp, bumpMutationEpoch } from './core.js';
+  GLYPHS, findApp, bumpMutationEpoch, state } from './core.js';
 
 /* ---------------- DOM 引用 ---------------- */
 const appModalMask = $('#appModalMask'), appModal = $('#appModal'), appModalTitle = $('#appModalTitle');
 const fName = $('#fName'), fCmd = $('#fCmd'), fCwd = $('#fCwd'), fPort = $('#fPort');
+const fShell = $('#fShell'), shellField = $('#shellField'), fShellHint = $('#fShellHint');
+const isWindows = () => state.data?.platform === 'win32';
+const selectedShell = () => isWindows() ? fShell.value : 'bash';
+function refreshShellHint() {
+  shellField.hidden = !isWindows();
+  fShellHint.textContent = !isWindows() ? '使用 Bash 语法执行。'
+    : fShell.value === 'powershell'
+      ? "使用 PowerShell 5.1 语法，例如 $env:PORT='3000'; npm run dev。含空格的脚本路径前加 &，不支持 &&。"
+      : '使用 CMD 批处理语法，例如 set "PORT=3000" && npm run dev。多行调用 .bat / .cmd 或 npm 时请加 call。';
+}
 const kindRow = $('#kindRow'), portField = $('#portField'), fCmdLabel = $('#fCmdLabel');
 const btnPickScript = $('#btnPickScript'), btnPickCwd = $('#btnPickCwd');
 const btnDetectProject = $('#btnDetectProject');
@@ -41,6 +51,13 @@ function shellQuotePath(path) {
   return "'" + String(path).replace(/'/g, "'\"'\"'") + "'";
 }
 function fallbackScriptCommand(path) {
+  if (isWindows()) {
+    const quoted = '"' + String(path).replace(/%/g, '%%') + '"';
+    if (/\.py$/i.test(path)) return 'python -- ' + quoted;
+    if (/\.ps1$/i.test(path)) return 'powershell -NoProfile -ExecutionPolicy Bypass -File ' + quoted;
+    if (/\.(sh|bash|command)$/i.test(path)) return 'bash -- ' + quoted;
+    return quoted;
+  }
   const quoted = shellQuotePath(path);
   const suffix = (String(path).match(/(\.[^./]+)$/) || [])[1]?.toLowerCase();
   if (suffix === '.py') return 'python3 -- ' + quoted;
@@ -175,6 +192,7 @@ function renderIconPreview() {
 }
 
 let modalKind = 'service';
+let modalSessionId = 0;
 let detectRequestSeq = 0;
 let detectedPortValue = null;
 
@@ -205,6 +223,7 @@ function modalLifecycleChanged() {
   const currentPort = modalKind === 'task' ? null
     : readPortValue();
   return fCmd.value.trim() !== (editingAppOriginal.command || '') ||
+    selectedShell() !== (editingAppOriginal.shell || (isWindows() ? 'cmd' : 'bash')) ||
     (fCwd.value.trim() || null) !== (editingAppOriginal.cwd || null) ||
     currentPort !== (editingAppOriginal.port == null ? null : editingAppOriginal.port) ||
     modalKind !== (editingAppOriginal.kind || 'service');
@@ -256,6 +275,7 @@ kindRow.querySelectorAll('.kind-btn').forEach(b =>
   b.addEventListener('click', () => setModalKind(b.dataset.kind)));
 
 export function openAppModal(app, presetKind, focusAction = '') {
+  modalSessionId += 1;
   editingAppId = app ? app.id : null;
   pendingAttach = !editingAppId && app && Number.isInteger(app.attachPid)
     && app.attachPid > 0 && Number.isInteger(Number(app.port))
@@ -267,6 +287,7 @@ export function openAppModal(app, presetKind, focusAction = '') {
       }
     : null;
   editingAppOriginal = app ? {
+    shell: app.shell || (isWindows() ? 'cmd' : 'bash'),
     command: app.command || '', cwd: app.cwd || null,
     port: app.port == null ? null : app.port,
     kind: app.kind || 'service', running: !!app.running,
@@ -277,6 +298,8 @@ export function openAppModal(app, presetKind, focusAction = '') {
   selectedGlyph = (app && app.glyph) || null;
   fName.value = (app && app.name) || '';
   fCmd.value = (app && app.command) || '';
+  fShell.value = app?.shell === 'powershell' ? 'powershell' : 'cmd';
+  refreshShellHint();
   fCwd.value = (app && app.cwd) || '';
   fPort.value = app && app.port != null ? app.port : '';
   [fName, fCmd, fCwd, fPort].forEach(clearFieldError);
@@ -294,6 +317,7 @@ export function openAppModal(app, presetKind, focusAction = '') {
   if (pendingAttach && fCwd.value.trim()) detectProject();
 }
 export function closeAppModal() {
+  modalSessionId += 1;
   closeLayer(appModalMask);
   resetDetection();
   editingAppId = null;
@@ -308,6 +332,8 @@ function applyDetectedCandidate(candidate, option) {
   const previousAutoPort = detectedPortValue == null ? '' : String(detectedPortValue);
   const currentPort = fPort.value.trim();
   fCmd.value = candidate.command || '';
+  if (isWindows()) fShell.value = candidate.shell || 'cmd';
+  refreshShellHint();
   clearFieldError(fCmd);
   setModalKind(candidate.kind || 'service');
   if (candidate.port != null) {
@@ -458,6 +484,7 @@ function rememberSavedApp(app, id, body) {
   editingAppId = id;
   editingAppOriginal = {
     command: body.command,
+    shell: body.shell,
     cwd: body.cwd,
     port: body.port,
     kind: body.kind,
@@ -477,6 +504,7 @@ async function saveApp() {
   const body = {
     name,
     command,
+    shell: selectedShell(),
     cwd: fCwd.value.trim() || null,
     port,
     glyph: selectedGlyph || null,
@@ -555,20 +583,29 @@ export function initAppModal({ onAddService, onAddTask }) {
   appCancel.addEventListener('click', closeAppModal);
   appSave.addEventListener('click', saveApp);
   appStopEdit.addEventListener('click', stopEditingApp);
+  fShell.addEventListener('change', () => {
+    refreshShellHint();
+    refreshEditSaveMode();
+  });
   appModalMask.addEventListener('mousedown', e => { if (e.target === appModalMask) closeAppModal(); });
 
   /* 选择批处理脚本：自动填命令 / 工作目录 / 名称 */
   btnPickScript.addEventListener('click', async () => {
+    const sessionId = modalSessionId;
     btnPickScript.disabled = true;
     try {
-      const r = await act(post('/api/pick', { what: 'script' }));
+      const r = await act(post('/api/pick', { what: 'script', shell: selectedShell() }));
+      if (sessionId !== modalSessionId) return;
       if (!r || r.canceled || !r.path) return;  // 取消或失败均静默
       const p = r.path;
       fCmd.value = r.command || fallbackScriptCommand(p);
-      const dir = p.slice(0, p.lastIndexOf('/'));
+      const normalized = p.replace(/\\/g, '/');
+      const slash = normalized.lastIndexOf('/');
+      const dir = r.cwd || (slash === 2 && normalized[1] === ':'
+        ? p.slice(0, 3) : p.slice(0, slash));
       if (dir && !fCwd.value.trim()) fCwd.value = dir;
       if (!fName.value.trim()) {
-        const base = p.split('/').pop().replace(/\.(command|sh|bash|zsh|py)$/i, '');
+        const base = r.name || normalized.split('/').pop().replace(/\.(command|sh|bash|zsh|py|ps1|bat|cmd|exe|com)$/i, '');
         if (base) fName.value = base;
       }
       fCmd.classList.remove('invalid');
@@ -585,9 +622,11 @@ export function initAppModal({ onAddService, onAddTask }) {
 
   /* 浏览工作目录（Windows/macOS 原生选择框） */
   btnPickCwd.addEventListener('click', async () => {
+    const sessionId = modalSessionId;
     btnPickCwd.disabled = true;
     try {
       const r = await act(post('/api/pick', { what: 'dir' }));
+      if (sessionId !== modalSessionId) return;
       if (r && !r.canceled && r.path) {
         fCwd.value = r.path;
         fCwd.classList.remove('invalid');
