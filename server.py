@@ -478,6 +478,7 @@ class Config:
                "apps": [], "hidden": [], "pinned": [], "promoted": [],
                "watchedKeywords": [], "uiTheme": DEFAULT_UI_THEME}
     APP_DEFAULT = {"id": None, "name": "", "command": "", "cwd": None,
+                   "shell": None,
                    "port": None, "emoji": None, "glyph": None, "icon": None,
                    "favicon": None, "kind": "service", "lastPid": None,
                    "lastPgid": None, "runToken": None,
@@ -701,11 +702,19 @@ def release_instance_lock(lock_file):
 
 # ---------------------------------------------------------------- 子进程与解析
 
+def hidden_subprocess_kwargs():
+    """Windows 后台命令不得因父进程无控制台而反复弹出黑窗。"""
+    if not IS_WIN:
+        return {}
+    return {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0)}
+
+
 def run_cmd(args, timeout=SUBPROCESS_TIMEOUT):
     """运行命令并返回 stdout；任何异常/超时都返回空串，绝不上抛。"""
     try:
         r = subprocess.run(args, capture_output=True, text=True,
-                           errors="replace", timeout=timeout)
+                           errors="replace", timeout=timeout,
+                           **hidden_subprocess_kwargs())
         return r.stdout or ""
     except Exception:
         LOG.exception("命令执行失败: %r", args)
@@ -734,7 +743,10 @@ def _win_powershell(script, timeout=SUBPROCESS_TIMEOUT, sta=False):
         ]
         r = subprocess.run(
             args, capture_output=True, timeout=timeout,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            **hidden_subprocess_kwargs())
+        if r.returncode != 0:
+            LOG.warning("PowerShell 执行失败，退出码 %s", r.returncode)
+            return ""
         return r.stdout.decode("utf-8", errors="replace") or ""
     except Exception:
         LOG.exception("PowerShell 执行失败")
@@ -742,8 +754,13 @@ def _win_powershell(script, timeout=SUBPROCESS_TIMEOUT, sta=False):
 
 
 def _win_quote(value):
-    """cmd.exe 安全引用：双引号包裹，内部引号按 MSVC 规则加倍。"""
-    return '"%s"' % str(value).replace('"', '""')
+    """引用写入 CMD 批处理的路径/参数；百分号必须转义，延迟展开由锚点关闭。"""
+    return '"%s"' % str(value).replace('%', '%%').replace('"', '""')
+
+
+def app_shell(app):
+    """旧配置保留原平台解释器，不静默改变已有命令的语义。"""
+    return app.get("shell") or ("cmd" if IS_WIN else "bash")
 
 
 def _parse_win_process_table_json(text):
@@ -982,8 +999,9 @@ def _win_taskkill(pid, tree=True, force=False):
         args.append("/F")
     args += ["/PID", str(int(pid))]
     try:
-        r = subprocess.run(args, capture_output=True, text=True,
-                           errors="replace", timeout=SUBPROCESS_TIMEOUT)
+        r = subprocess.run(
+            args, capture_output=True, text=True, errors="replace",
+            timeout=SUBPROCESS_TIMEOUT, **hidden_subprocess_kwargs())
     except Exception as e:
         return False, "taskkill 失败: %s" % e
     if r.returncode == 0:
@@ -1820,6 +1838,7 @@ def build_apps(cfg, listeners, groups=None):
             health = {"status": "unknown", "blocking": False, "issues": []}
         apps.append({
             "id": app["id"], "name": app["name"], "command": app["command"],
+            "shell": app_shell(app),
             "cwd": app.get("cwd"), "port": port,
             "emoji": app.get("emoji"), "glyph": app.get("glyph"), "icon": app.get("icon"),
             "favicon": app.get("favicon"),
@@ -2102,6 +2121,8 @@ def build_launch_env(token, environ=None):
     if IS_WIN:
         # Windows 的用户 PATH 本来就包含 npm/node 等安装目录；无需补路径。
         env[RUN_TOKEN_ENV] = token
+        env.setdefault("PYTHONIOENCODING", "utf-8")
+        env.setdefault("PYTHONUTF8", "1")
         return env
     home = os.path.expanduser("~")
     preferred = [
@@ -2168,7 +2189,7 @@ def start_app(app):
 
 
 def _start_app_windows(app, cwd, logf, env, marker, token):
-    """Windows 启动：python 锚点进程持有 marker，内部以 cmd /c 运行用户命令。
+    """Windows 启动：python 锚点持有 marker，内部按所选解释器运行命令。
 
     锚点等整棵进程树清空后才退出（等价于 macOS 外层 bash 的 wait），
     因此服务/任务完成后的退出码、日志和“仍在运行”判定都能复现。
@@ -2182,8 +2203,8 @@ def _start_app_windows(app, cwd, logf, env, marker, token):
         header = "\n===== 启动于 %s =====\n" % time.strftime("%Y-%m-%d %H:%M:%S")
         logf.write(header.encode("utf-8"))
         proc = subprocess.Popen(
-            [sys.executable, anchor, marker, app["command"]],
-            cwd=cwd, stdout=logf, stderr=subprocess.STDOUT,
+            [sys.executable, anchor, marker, app["command"], app_shell(app)],
+            cwd=cwd, stdin=subprocess.DEVNULL, stdout=logf, stderr=subprocess.STDOUT,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             env=env)
         _invalidate_win_process_cache()
@@ -2318,8 +2339,11 @@ def _pick_path_windows(what):
         "$owner.Opacity = 0; $owner.Size = New-Object System.Drawing.Size(1,1); "
         "$owner.StartPosition = 'CenterScreen'; $owner.Show(); $owner.Activate(); "
     )
+    # ShowDialog() 无 owner 时，后台 HTTP 进程创建的对话框容易被浏览器遮挡。
+    # 独立的置顶 owner 只在选择期间存在；所有退出路径都释放窗口与对话框。
     owner_suffix = (
-        " finally { if ($owner) { $owner.Close(); $owner.Dispose() } }"
+        " finally { if ($f) { $f.Dispose() }; "
+        "if ($owner) { $owner.Close(); $owner.Dispose() } }"
     )
     if what == "dir":
         script = (
@@ -2353,11 +2377,19 @@ def _pick_path_windows(what):
     return text or None, False
 
 
-def command_for_script(path):
+def command_for_script(path, shell=None):
     """按脚本类型生成可直接保存的 shell 命令，并安全引用任意文件名。"""
     normalized = os.path.abspath(os.path.expanduser(str(path)))
     suffix = os.path.splitext(normalized)[1].lower()
     if IS_WIN:
+        if shell == "powershell":
+            quoted = "'" + normalized.replace("'", "''") + "'"
+            if suffix == ".py":
+                runner = "py -3" if shutil.which("py") else "python"
+                return "%s -- %s" % (runner, quoted)
+            if suffix in (".sh", ".bash", ".command", ".zsh"):
+                return "%s -- %s" % ("zsh" if suffix == ".zsh" else "bash", quoted)
+            return "& " + quoted
         quoted = _win_quote(normalized)
         if suffix == ".py":
             runner = "py -3" if shutil.which("py") else "python"
@@ -2366,9 +2398,8 @@ def command_for_script(path):
             return "powershell -NoProfile -ExecutionPolicy Bypass -File %s" % quoted
         if suffix in (".bat", ".cmd", ".exe", ".com"):
             return quoted
-        if suffix in (".sh", ".bash", ".zsh"):
-            if shutil.which("bash"):  # Git Bash 等
-                return "bash -- %s" % quoted
+        if suffix in (".sh", ".bash", ".command", ".zsh"):
+            return "%s -- %s" % ("zsh" if suffix == ".zsh" else "bash", quoted)
         if os.access(normalized, os.R_OK):
             return quoted
         return quoted
@@ -2399,6 +2430,24 @@ def _simple_command_tokens(command):
     """解析无管道/重定向/展开的简单命令；不确定时返回 None。"""
     if not isinstance(command, str) or not command.strip():
         return []
+    if IS_WIN:
+        # CMD 不把反斜杠或单引号当作 POSIX 转义。仅解析独立的双引号参数；
+        # 展开、控制符、混合引号等交回解释器，不能据此错误禁用启动。
+        if any(c in command for c in '%!^\r\n'):
+            return None
+        word = r'(?:"[^"\r\n]*"|[^\s"]+)'
+        if not re.fullmatch(r'\s*' + word + r'(?:\s+' + word + r')*\s*', command):
+            return None
+        parts = re.findall(word, command)
+        tokens = []
+        for part in parts:
+            if part.startswith('"'):
+                tokens.append(part[1:-1])
+            elif any(c in part for c in '|&;<>()*?'):
+                return None
+            else:
+                tokens.append(part)
+        return tokens
     try:
         lexer = shlex.shlex(
             command, posix=True, punctuation_chars="|&;<>()")
@@ -2426,6 +2475,18 @@ def _resolve_command_path(value, cwd):
     return os.path.normpath(os.path.join(cwd, value))
 
 
+def _powershell_script_tokens(command):
+    """只检查自动生成形式中的明确文件路径；cmdlet、展开和表达式保持 unknown。"""
+    word = r"(?:'(?:[^']|'')*'|[\w.:/\\-]+)"
+    match = re.fullmatch(r'\s*(?:&\s+)?(' + word + r'(?:\s+' + word + r')*)\s*', command)
+    if not match:
+        return None
+    tokens = [part[1:-1].replace("''", "'") if part.startswith("'") else part
+              for part in re.findall(word, match.group(1))]
+    path, _, _ = _script_target(tokens, os.path.expanduser('~'))
+    return tokens if path else None
+
+
 def _script_target(tokens, cwd):
     """提取 (路径, 是否直接执行, 原路径是否相对)，否则返回空。"""
     if not tokens:
@@ -2438,7 +2499,22 @@ def _script_target(tokens, cwd):
         return None, False, False
     executable = tokens[index]
     base = os.path.basename(executable)
+    if IS_WIN:
+        base = base.lower().removesuffix('.exe')
     args = tokens[index + 1:]
+
+    if IS_WIN and base in {"powershell", "pwsh"}:
+        lowered = [arg.lower() for arg in args]
+        if '-file' in lowered:
+            position = lowered.index('-file') + 1
+            if position < len(args):
+                candidate = args[position]
+                return (_resolve_command_path(candidate, cwd), False,
+                        not os.path.isabs(candidate))
+        return None, False, False
+
+    if IS_WIN and base in {"call"}:
+        return _script_target(args, cwd)
 
     if re.fullmatch(r"(?:python(?:\d+(?:\.\d+)*)?|py(?:-\d+(?:\.\d+)*)?)", base):
         if "-m" in args or "-c" in args:
@@ -2468,7 +2544,12 @@ def _script_target(tokens, cwd):
 
     suffix = os.path.splitext(executable)[1].lower()
     if suffix in SCRIPT_SUFFIXES or "/" in executable or "\\" in executable:
-        return (_resolve_command_path(executable, cwd), True,
+        target = _resolve_command_path(executable, cwd)
+        if (IS_WIN and suffix in ('.bat', '.cmd') and not os.path.isfile(target)
+                and '/' not in executable and '\\' not in executable):
+            # npm.cmd / pnpm.cmd 等通常来自 PATH，不在项目目录。
+            target = shutil.which(executable, path=build_launch_env('health-check').get('PATH')) or target
+        return (target, True,
                 not os.path.isabs(os.path.expanduser(executable)))
     return None, False, False
 
@@ -2498,7 +2579,13 @@ def inspect_app_health(app):
             "pick-cwd",
         )
 
-    tokens = _simple_command_tokens(app.get("command") or "")
+    shell = app_shell(app)
+    if shell not in (("cmd", "powershell") if IS_WIN else ("bash",)):
+        add("shell-unavailable", "执行方式不适用于当前系统", shell,
+            "编辑项目，选择当前系统支持的执行方式。", "edit-command")
+    # PowerShell 可调用 cmdlet、函数、表达式；无法用 PATH 判定它们是否存在。
+    tokens = (_powershell_script_tokens(app.get("command") or "") if shell == "powershell" else
+              _simple_command_tokens(app.get("command") or ""))
     if tokens is None:
         return {
             "status": "error" if issues else "unknown",
@@ -2522,13 +2609,20 @@ def inspect_app_health(app):
                 "检查脚本权限，或重新选择一个可读取的脚本。",
                 "pick-script",
             )
-        elif direct and not os.access(script_path, os.X_OK):
+        elif direct and not IS_WIN and not os.access(script_path, os.X_OK):
             add(
                 "script-not-executable", "脚本不可执行",
                 "直接运行的脚本没有执行权限：%s" % script_path,
                 "给脚本执行权限，或改为使用 bash / python3 执行。",
                 "edit-command",
             )
+        elif (IS_WIN and direct
+              and not (shell == "powershell" and script_path.lower().endswith('.ps1'))
+              and os.path.splitext(script_path)[1].lower() in SCRIPT_SUFFIXES - {'.bat', '.cmd'}):
+            add("script-runtime-required", "脚本需要指定解释器",
+                "当前执行方式需要为此脚本指定解释器：%s" % script_path,
+                "使用“选择脚本”重新生成命令，例如：%s" % command_for_script(script_path, shell),
+                "pick-script")
 
     # 直接脚本已由上面的文件检查覆盖；其他简单命令检查首个运行时。
     index = 0
@@ -2537,8 +2631,15 @@ def inspect_app_health(app):
         index += 1
     executable = tokens[index] if tokens and index < len(tokens) else ""
     executable_base = os.path.basename(executable)
-    if executable and not direct and executable_base not in SHELL_BUILTINS:
-        if "/" in executable:
+    builtins = ({"assoc", "break", "call", "cd", "chdir", "cls", "color", "copy",
+                 "date", "del", "dir", "echo", "endlocal", "erase", "exit", "for",
+                 "ftype", "if", "md", "mkdir", "mklink", "move", "path", "pause",
+                 "popd", "prompt", "pushd", "rd", "rem", "ren", "rename", "rmdir",
+                 "set", "setlocal", "shift", "start", "time", "title", "type", "ver",
+                 "verify", "vol"} if IS_WIN else SHELL_BUILTINS)
+    builtin_name = executable_base.lower() if IS_WIN else executable_base
+    if executable and not direct and builtin_name not in builtins:
+        if "/" in executable or (IS_WIN and "\\" in executable):
             runtime = _resolve_command_path(executable, cwd)
             runtime_ok = os.path.isfile(runtime) and os.access(runtime, os.X_OK)
         else:
@@ -2641,6 +2742,7 @@ def detect_project(root):
             port = None
         candidates.append({
             "command": command,
+            "shell": "cmd" if IS_WIN else "bash",
             "label": label,
             "source": source,
             "port": port,
@@ -2705,7 +2807,11 @@ def detect_project(root):
             if is_hexo and str(name).lower() == "server" and re.search(
                     r"\bhexo\s+(?:s|server)\b", script, re.I):
                 continue  # 下方提供更短、更通用的 hexo s，不重复同一操作
-            command = "%s %s" % (runner, shlex.quote(str(name)))
+            if IS_WIN:
+                script_arg = str(name) if re.fullmatch(r'[A-Za-z0-9_:.-]+', str(name)) else _win_quote(name)
+            else:
+                script_arg = shlex.quote(str(name))
+            command = "%s %s" % (runner, script_arg)
             port = _port_from_command(script)
             if port is None:
                 port = _package_default_port(str(name).lower(), script, deps)
@@ -2809,7 +2915,7 @@ def detect_project(root):
                             "start.cmd", "dev.cmd", "run.cmd", "start.ps1"):
             if os.path.isfile(os.path.join(root, script_name)):
                 note_file(script_name)
-                add(_win_quote(os.path.join(root, script_name)),
+                add(command_for_script(os.path.join(root, script_name)),
                     "现有启动脚本", script_name, None, 70,
                     "也可以继续使用“选择脚本”手动指定")
                 break
@@ -3448,6 +3554,13 @@ def validate_app_fields(data, partial):
     """校验/规范化应用字段。partial=True 时仅校验出现的字段。
     返回 (fields, error)：fields 为规范化后的字段子集。"""
     fields = {}
+    if "shell" in data:
+        allowed = ("cmd", "powershell") if IS_WIN else ("bash",)
+        if data["shell"] not in allowed:
+            return None, "shell 必须是 " + "/".join(allowed)
+        fields["shell"] = data["shell"]
+    elif not partial:
+        fields["shell"] = "cmd" if IS_WIN else "bash"
     for key in ("name", "command"):
         if key in data:
             v = data[key]
@@ -3995,6 +4108,10 @@ class Handler(BaseHTTPRequestHandler):
         if what not in ("dir", "script"):
             self.send_err(400, "what 必须是 dir/script")
             return
+        shell = data.get("shell")
+        if shell is not None and shell not in (("cmd", "powershell") if IS_WIN else ("bash",)):
+            self.send_err(400, "不支持的执行方式")
+            return
         path, canceled = pick_path(what)
         if canceled:  # 用户取消不是错误，前端静默
             self.send_json({"ok": True, "canceled": True})
@@ -4003,7 +4120,9 @@ class Handler(BaseHTTPRequestHandler):
         else:
             result = {"ok": True, "path": path}
             if what == "script":
-                result["command"] = command_for_script(path)
+                result["command"] = command_for_script(path, shell)
+                result["cwd"] = os.path.dirname(path)
+                result["name"] = os.path.splitext(os.path.basename(path))[0]
             self.send_json(result)
 
     def handle_project_detect(self):
@@ -4164,6 +4283,7 @@ class Handler(BaseHTTPRequestHandler):
         while find_app(snapshot, new_id):
             new_id = secrets.token_hex(4)
         app = {"id": new_id, "name": fields["name"],
+               "shell": fields["shell"],
                "command": fields["command"], "cwd": fields["cwd"],
                "port": fields["port"], "emoji": fields["emoji"],
                "glyph": fields["glyph"], "kind": fields["kind"],
@@ -4494,9 +4614,9 @@ class Handler(BaseHTTPRequestHandler):
             if not fields:
                 self.send_err(400, "没有可更新的字段")
                 return
-            lifecycle_fields = {"command", "cwd", "port", "kind"}
+            lifecycle_fields = {"command", "cwd", "port", "kind", "shell"}
             lifecycle_changed = any(
-                key in fields and fields[key] != app.get(key)
+                key in fields and fields[key] != (app_shell(app) if key == "shell" else app.get(key))
                 for key in lifecycle_fields)
             stopped_for_update = False
             if lifecycle_changed and app_alive_sign(app):

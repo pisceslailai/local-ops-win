@@ -204,8 +204,10 @@ class AppHealthTests(unittest.TestCase):
                          ["cwd-missing"])
 
     def test_complex_or_dynamic_command_is_unknown_and_not_blocked(self):
-        for command in ("python3 job.py && echo done", "python3 '$JOB'",
-                        "python3 'unterminated"):
+        commands = (("python job.py && echo done", "python %JOB%", 'python "unterminated')
+                    if server.IS_WIN else ("python3 job.py && echo done", "python3 '$JOB'",
+                                           "python3 'unterminated"))
+        for command in commands:
             with self.subTest(command=command):
                 health = server.inspect_app_health(
                     {"command": command, "cwd": None})
@@ -348,9 +350,11 @@ class ProjectDetectionTests(unittest.TestCase):
         self.assertIsNone(error)
         self.assertEqual(result["candidates"], [
             {"command": "hexo s", "label": "Hexo 本地服务",
+             "shell": "cmd" if server.IS_WIN else "bash",
              "source": "Hexo 项目结构", "port": 4000,
              "kind": "service", "detail": "等同于 hexo server"},
             {"command": "hexo cl", "label": "Hexo 清除缓存",
+             "shell": "cmd" if server.IS_WIN else "bash",
              "source": "Hexo 项目结构", "port": None,
              "kind": "task", "detail": "清除缓存和已生成文件，不启动服务"},
         ])

@@ -6,10 +6,9 @@
 （console-run:<token>），argv[2] 是用户在启动台保存的命令字符串。
 
 行为等价于 macOS 端的外层 bash 包装：
-1. 把用户命令写入临时 .cmd 批处理文件，再以 ``cmd /d /c`` 执行
-   （cmd 对含引号命令行的解析规则与 POSIX 完全不同，批处理文件是
-   唯一能原样执行任意命令的稳妥通道）；文件以系统区域编码写入，
-   与 cmd 的解析一致；
+1. argv[3] 指定 cmd（旧配置默认）或 powershell。CMD 命令写入 UTF-8
+   临时批处理，切换代码页并禁用延迟展开；PowerShell 通过 EncodedCommand
+   直接执行，不经过 CMD 二次解析。
 2. 直接子进程退出后继续等到整棵进程树清空再退出（对应 bash 的 ``wait``），
    因此“脚本把服务放后台后自己退出”的场景下锚点仍是受控身份锚；
 3. 以直接子进程的退出码退出，供总控台记录任务成功/失败。
@@ -19,7 +18,7 @@ PPID 后代树识别（Windows 子进程在父进程退出后仍保留原 PPID�
 """
 
 import json
-import locale
+import base64
 import os
 import re
 import subprocess
@@ -90,16 +89,33 @@ def _anchor_temp_dir():
 def _batch_file(command, directory=None):
     """写入带所有权标记的临时 .cmd，返回绝对路径。"""
     directory = directory or _anchor_temp_dir()
-    encoding = locale.getpreferredencoding(False) or "utf-8"
     fd, path = tempfile.mkstemp(
         prefix="anchor-%d-" % os.getpid(), suffix=".cmd", dir=directory)
-    with os.fdopen(fd, "w", encoding=encoding, errors="replace",
-                   newline="\r\n") as f:
+    with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
         f.write(BATCH_MARKER.decode("ascii") + "\r\n")
-        f.write("@echo off\r\n")
-        f.write(command + "\r\n")
+        f.write("@echo off\r\nchcp 65001 >nul\r\n")
+        f.write(command.replace("\r\n", "\n").replace("\r", "\n").replace("\n", "\r\n") + "\r\n")
         f.write("exit /b %errorlevel%\r\n")
     return path
+
+
+def _powershell_args(command):
+    # EncodedCommand 保留 Unicode 与用户引号，避免再次经过 CMD 解析。
+    # 原生命令的退出码（含 130）与 PowerShell 异常都必须传回任务监视器。
+    script = (
+        "$ProgressPreference = 'SilentlyContinue'\n"
+        "$ErrorActionPreference = 'Stop'\n"
+        "[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)\n"
+        "[Console]::InputEncoding = [Console]::OutputEncoding\n"
+        "$OutputEncoding = [Console]::OutputEncoding\n"
+        "$global:LASTEXITCODE = 0\n"
+        "try {\n" + command + "\n"
+        "if (-not $?) { if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; exit 1 }\n"
+        "exit $LASTEXITCODE\n"
+        "} catch { [Console]::Error.WriteLine($_.ToString()); exit 1 }\n")
+    encoded = base64.b64encode(script.encode("utf-16le")).decode("ascii")
+    return ["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive",
+            "-ExecutionPolicy", "Bypass", "-OutputFormat", "Text", "-EncodedCommand", encoded]
 
 
 def _cleanup_stale_batches(directory=None, active_pids=None):
@@ -146,7 +162,8 @@ def _snapshot_ppids_powershell():
          "[Console]::OutputEncoding=[Text.Encoding]::UTF8; "
          "Get-CimInstance Win32_Process | "
          "Select-Object ProcessId,ParentProcessId | ConvertTo-Json -Compress"],
-        capture_output=True, timeout=10)
+        capture_output=True, timeout=10,
+        creationflags=CREATE_NO_WINDOW)
     if out.returncode != 0:
         raise OSError("PowerShell process snapshot failed")
     text = out.stdout.decode("utf-8", errors="replace") or ""
@@ -231,19 +248,32 @@ def main():
     if len(sys.argv) < 3:
         return 1
     _marker, command = sys.argv[1], sys.argv[2]
+    shell = sys.argv[3] if len(sys.argv) > 3 else "cmd"
+    if shell not in ("cmd", "powershell"):
+        print("Unsupported shell: " + shell, file=sys.stderr)
+        return 1
+    batch = None
     try:
         temp_dir = _anchor_temp_dir()
         _cleanup_stale_batches(temp_dir)
-        batch = _batch_file(command, directory=temp_dir)
-    except OSError:
+        if shell == "cmd":
+            batch = _batch_file(command, directory=temp_dir)
+            args = [os.environ.get("COMSPEC") or "cmd.exe", "/d", "/v:off", "/c", batch]
+        else:
+            args = _powershell_args(command)
+    except OSError as exc:
+        print("Cannot prepare command: " + str(exc), file=sys.stderr)
         return 1
     try:
         proc = subprocess.Popen(
-            ["cmd", "/d", "/c", batch],
+            args,
+            stdin=subprocess.DEVNULL, stdout=sys.stdout, stderr=sys.stderr,
             creationflags=CREATE_NO_WINDOW)
-    except OSError:
+    except OSError as exc:
+        print("Cannot launch command: " + str(exc), file=sys.stderr)
         try:
-            os.remove(batch)
+            if batch:
+                os.remove(batch)
         except OSError:
             pass
         return 1
@@ -257,7 +287,8 @@ def main():
         return code if isinstance(code, int) else 1
     finally:
         try:
-            os.remove(batch)
+            if batch:
+                os.remove(batch)
         except OSError:
             pass
 

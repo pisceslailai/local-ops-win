@@ -463,7 +463,15 @@
         <label for="fCmd"><span id="fCmdLabel">启动命令</span> <span class="req">*</span></label>
         <button class="link-btn" id="btnPickScript" type="button">选择脚本…</button>
       </div>
-      <textarea id="fCmd" rows="3" placeholder="选择项目或脚本后自动生成命令，也可以手动填写" required aria-required="true"></textarea>
+      <div id="shellField" hidden>
+        <label for="fShell">执行方式</label>
+        <select id="fShell">
+          <option value="cmd">CMD（批处理）</option>
+          <option value="powershell">Windows PowerShell 5.1</option>
+        </select>
+      </div>
+      <textarea id="fCmd" rows="3" placeholder="选择项目或脚本后自动生成命令，也可以手动填写" required aria-required="true" aria-describedby="fShellHint"></textarea>
+      <p class="field-hint" id="fShellHint"></p>
     </div>
     <div class="field" id="portField">
       <label for="fPort">端口</label>
