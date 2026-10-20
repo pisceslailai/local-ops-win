@@ -224,6 +224,16 @@ class FrontendAccessibilityContractTests(unittest.TestCase):
         self.assertIn("const isTask = modalKind === 'task'", overlays)
         self.assertIn("const stopVerb = isTask ? '中止任务' : '停止服务'", overlays)
 
+    def test_relative_time_uses_chinese_units_not_english_abbreviations(self):
+        core = (ROOT / "static/js/core.js").read_text(encoding="utf-8")
+        self.assertIn("export function fmtUptime", core)
+        self.assertIn("return m + '分钟'", core)
+        self.assertIn("'小时'", core)
+        self.assertIn("'天'", core)
+        self.assertNotIn("return m + 'm'", core)
+        self.assertNotIn("h + 'h'", core)
+        self.assertNotIn("d + 'd'", core)
+
     def test_new_port_discovery_is_session_scoped_and_actionable(self):
         html = (ROOT / "static/index.html").read_text(encoding="utf-8")
         services = (ROOT / "static/js/services.js").read_text(encoding="utf-8")

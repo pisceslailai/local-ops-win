@@ -31,3 +31,6 @@ release/
 *.zip
 *.tar.gz
 *.sha256
+
+# pi agent
+.pi/
