@@ -1,3 +1,4 @@
+import errno
 import json
 import os
 import shlex
@@ -1264,6 +1265,51 @@ class ThemeTests(unittest.TestCase):
             snap = cfg2.snapshot()
             self.assertEqual(snap["uiTheme"], "custom")
             self.assertIsInstance(snap["apps"], list)
+
+
+class PortSelectionTests(unittest.TestCase):
+    """Windows 的 Hyper-V/WSL 保留段可能吞掉整个 9600-9609 窗口。"""
+
+    def test_preferred_port_is_tried_first(self):
+        self.assertEqual(server.port_candidates(9603)[0], 9603)
+        self.assertEqual(server.port_candidates(12000)[0], 12000)
+        for bad in (None, 0, -1, 70000, "9600"):
+            self.assertEqual(server.port_candidates(bad)[0], server.PORT_START)
+
+    def test_documented_window_comes_before_wider_range(self):
+        candidates = server.port_candidates()
+        window = list(range(server.PORT_START,
+                            server.PORT_START + server.PORT_TRIES))
+        self.assertEqual(candidates[:server.PORT_TRIES], window)
+        self.assertEqual(len(candidates), server.PORT_SCAN_TRIES + 1)
+        self.assertEqual(candidates[-1], 0,
+                         "窗口全不可用时必须回退到系统分配端口")
+
+    def test_bind_errors_distinguish_inuse_from_reserved(self):
+        self.assertEqual(
+            server._port_bind_error_kind(OSError(errno.EADDRINUSE, "busy")),
+            "inuse")
+        self.assertEqual(
+            server._port_bind_error_kind(OSError(errno.EACCES, "denied")),
+            "reserved")
+        self.assertEqual(
+            server._port_bind_error_kind(OSError(errno.ENOENT, "other")),
+            "other")
+        reserved = OSError(errno.EACCES, "denied")
+        reserved.winerror = 10013
+        self.assertEqual(server._port_bind_error_kind(reserved), "reserved")
+        inuse = OSError(errno.EINVAL, "busy")
+        inuse.winerror = 10048
+        self.assertEqual(server._port_bind_error_kind(inuse), "inuse")
+
+    def test_failure_hint_does_not_blame_port_occupancy(self):
+        """保留段导致的失败不能报成「端口均被占用」，否则会把排查带偏。"""
+        hint = server._port_failure_hint({"reserved": [9600, 9601]})
+        self.assertIn("保留", hint)
+        self.assertIn("WinError 10013", hint)
+        self.assertNotIn("均被占用", hint)
+        self.assertIn("被占用",
+                      server._port_failure_hint({"inuse": [9600]}))
 
 
 if __name__ == "__main__":

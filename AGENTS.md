@@ -16,11 +16,12 @@
 - `start.command` — macOS 双击启动脚本（chmod +x）
 - `start.bat` — Windows 双击启动脚本；优先 `py -3`，回退 `python`
 - `tools/win_anchor.py` — Windows 受控应用锚点，持有 token，并用进程内 Toolhelp32 快照等待 PPID 后代树退出；仅在原生快照失败时回退 PowerShell CIM；临时批处理位于 `%TEMP%\local-ops-console-anchor`，以产品签名 + 锚点 PID 限定安全清理范围
+- `tools/win_reserve_console_port.ps1` — Windows 提权辅助：把总控台端口窗口写成持久的管理端口排除段（先占位，Hyper-V/WSL 之后绕开），可选 `-RestoreDynamicRange` 恢复 49152+16384
 - `总控台.app` — macOS 无终端窗口启动器（`LSUIElement` 后台应用；内部直接启动 `server.py`，输出写入 `~/Library/Logs/总控台/console.log`）
 
 ## 运行
 
-`python3 server.py`（macOS）/ `py -3 server.py`（Windows）→ 绑定 `127.0.0.1`，端口从 **9600** 起尝试，被占则 +1（最多 10 个）。启动后自动打开浏览器。`/favicon.ico` 返回统一品牌图标。
+`python3 server.py`（macOS）/ `py -3 server.py`（Windows）→ 绑定 `127.0.0.1`，端口从 **9600** 起尝试，被占则 +1（文档窗口 10 个）。Windows 上 Hyper-V/WSL 的动态保留段可能整段吞掉该窗口（bind 报 `WinError 10013`，不是 `EADDRINUSE`）：此时继续向后扫 `PORT_SCAN_TRIES` 个端口，最后以端口 0 交系统分配，保证总能启动（`port_candidates()` / `_port_bind_error_kind()` / `_port_failure_hint()`），失败文案必须区分「被占用」与「被保留」。想把端口固定回 9600 用 `tools/win_reserve_console_port.ps1`（提权写入持久的管理端口排除段，Hyper-V/WSL 会绕开而普通程序仍可 bind）。启动后自动打开浏览器。`/favicon.ico` 返回统一品牌图标。
 
 ## API 契约（全部 JSON；icon 上传为原始字节）
 

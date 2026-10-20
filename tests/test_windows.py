@@ -476,7 +476,17 @@ class WindowsProcessTests(unittest.TestCase):
                     server.stop_pid_tree(proc.pid)
 
     def test_service_lifecycle_managed_stop(self):
-        port = _free_port()
+        # `_free_port()` 只保证「取号那一刻」空闲：本机 TCP 动态端口范围从 1024
+        # 起步，子进程真正 bind 之前，这个临时端口可能已被系统分给别的瞬时连接。
+        # 碰到这种碰撞就换个端口重试，不把偶发竞争当成回归。
+        for _ in range(3):
+            port = _free_port()
+            if self._managed_stop_round(port):
+                return
+        self.fail("http.server 连续 3 次未能监听临时端口（子进程 bind 一直被抢）")
+
+    def _managed_stop_round(self, port):
+        """一轮完整生命周期；端口被抢时返回 False 由调用方换端口重试。"""
         with tempfile.TemporaryDirectory() as td, \
                 mock.patch.object(server, "LOGS_DIR", td):
             base = {**server.Config.APP_DEFAULT, "id": "win000002",
@@ -493,17 +503,26 @@ class WindowsProcessTests(unittest.TestCase):
                 while time.time() < deadline and not managed:
                     time.sleep(0.3)
                     managed = server.managed_pids(tracked)
-                self.assertTrue(managed, "受管进程未被识别")
+                if not managed:
+                    # 子进程没起来也可能是端口被抢，同样交给重试
+                    return False
                 # token 校验：锚点命令行应带本次启动的随机标记
                 snap = server.ps_snapshot({proc.pid})
                 self.assertIn("console-run:" + token,
                               snap.get(proc.pid, {}).get("args", ""))
-                self.assertIn(port, {p for _, p in server.scan_listeners()})
+                deadline = time.time() + 10
+                listeners = set()
+                while time.time() < deadline and port not in listeners:
+                    time.sleep(0.4)
+                    listeners = {p for _, p in server.scan_listeners()}
+                if port not in listeners:
+                    return False
                 stopped, error = server.stop_app_and_clear(
                     cfg, tracked, timeout=10)
                 self.assertTrue(stopped, error)
                 self.assertFalse(server.pid_alive(proc.pid))
                 self.assertNotIn(port, {p for _, p in server.scan_listeners()})
+                return True
             finally:
                 if server.pid_alive(proc.pid):
                     server.stop_pid_tree(proc.pid)

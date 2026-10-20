@@ -181,6 +181,10 @@ APP_VERSION, VERSION_LOAD_ERROR = read_project_version()
 HOST = "127.0.0.1"
 PORT_START = 9600
 PORT_TRIES = 10
+# 文档承诺的 9600-9609 只是首选窗口。Windows 会把成片的端口划给 Hyper-V/WSL
+# 保留（每次重启后重新划分），该窗口可能整段不可绑定，因此窗口用尽后继续向
+# 后扫一段，最后由端口 0 交由系统分配，保证总能启动。
+PORT_SCAN_TRIES = 400
 SUBPROCESS_TIMEOUT = 5          # lsof/ps 等子进程超时（秒）
 MAX_ICON_BYTES = 5 * 1024 * 1024
 MAX_JSON_BYTES = 1 * 1024 * 1024
@@ -4965,6 +4969,50 @@ def restart_helper(old_pid, preferred_port):
     return 0
 
 
+def _port_bind_error_kind(error):
+    """区分端口被占用与被系统保留。
+
+    Hyper-V/WSL 预留段上的 bind 在 Windows 返回 WinError 10013 (WSAEACCES)，
+    与"已被别的进程占用"(10048) 是两回事，混淆会把排查引向错误方向。
+    """
+    if getattr(error, "winerror", None) == 10048 or error.errno == errno.EADDRINUSE:
+        return "inuse"
+    if (getattr(error, "winerror", None) == 10013
+            or error.errno in (errno.EACCES, errno.EPERM)):
+        return "reserved"
+    return "other"
+
+
+def port_candidates(preferred_port=None):
+    """按优先级生成可尝试的绑定端口，末尾的 0 表示交给系统分配。"""
+    ordered, seen = [], set()
+
+    def add(port):
+        if port not in seen:
+            seen.add(port)
+            ordered.append(port)
+
+    if isinstance(preferred_port, int) and 0 < preferred_port < 65536:
+        add(preferred_port)
+    for port in range(PORT_START, PORT_START + PORT_SCAN_TRIES):
+        add(port)
+    add(0)
+    return ordered
+
+
+def _port_failure_hint(rejected):
+    inuse = rejected.get("inuse") or []
+    reserved = rejected.get("reserved") or []
+    window = "%d-%d" % (PORT_START, PORT_START + PORT_SCAN_TRIES - 1)
+    if reserved and not inuse:
+        return ("%s 到系统分配端口全部被系统保留（Hyper-V/WSL 预留段，bind 报 "
+                "WinError 10013），无法启动。请用管理员执行 "
+                "netsh int ipv4 show excludedportrange protocol=tcp 查看；"
+                "想固定回 9600 请运行 tools\\win_reserve_console_port.ps1。" % window)
+    return ("%s 到系统分配端口均不可用（%d 个被占用、%d 个被保留），无法启动。"
+            % (window, len(inuse), len(reserved)))
+
+
 def _run_console(preferred_port=None, open_browser=True):
     logging.basicConfig(
         level=logging.INFO,
@@ -4975,20 +5023,28 @@ def _run_console(preferred_port=None, open_browser=True):
     cfg = Config(CONFIG_PATH)
 
     server, port = None, None
-    candidates = list(range(PORT_START, PORT_START + PORT_TRIES))
-    if isinstance(preferred_port, int) and preferred_port in candidates:
-        candidates.remove(preferred_port)
-        candidates.insert(0, preferred_port)
-    for p in candidates:
+    rejected = {}
+    for candidate in port_candidates(preferred_port):
         try:
-            server = ConsoleServer((HOST, p), Handler, cfg, p)
-            port = p
-            break
-        except OSError:
+            server = ConsoleServer((HOST, candidate), Handler, cfg, candidate)
+        except OSError as error:
+            rejected.setdefault(_port_bind_error_kind(error), []).append(candidate)
+            server = None
             continue
+        # 候选端口 0 时系统分配真实端口，只能用回填后的地址。
+        port = server.server_address[1]
+        if not PORT_START <= port < PORT_START + PORT_TRIES:
+            if rejected.get("reserved"):
+                print("提示：%d 个候选端口被系统保留（Hyper-V/WSL 预留段），已改用 %d；"
+                      "要固定用 9600 请运行 tools\\win_reserve_console_port.ps1。"
+                      % (len(rejected["reserved"]), port), flush=True)
+            else:
+                print("提示：%d-%d 均不可用，已改用 %d。"
+                      % (PORT_START, PORT_START + PORT_TRIES - 1, port),
+                      flush=True)
+        break
     if server is None:
-        print("错误：端口 %d-%d 均被占用，无法启动。" %
-              (PORT_START, PORT_START + PORT_TRIES - 1))
+        print("错误：%s" % _port_failure_hint(rejected), flush=True)
         sys.exit(1)
 
     print("总控台已启动: http://%s:%d/  (Ctrl+C 停止)" % (HOST, port), flush=True)

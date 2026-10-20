@@ -61,17 +61,17 @@ export function localServiceUrl(item, port) {
   host = host === 'localhost' ? 'localhost' : '127.0.0.1';
   return 'http://' + host + ':' + value;
 }
-/* 秒 → 刚刚 / Nm / NhNm / NdNh */
+/* 秒 → 刚刚 / N分钟 / N小时N分钟 / N天N小时（不用 m/h/d，避免被读成毫秒） */
 export function fmtUptime(sec) {
   if (sec == null || isNaN(sec)) return '--';
   sec = Math.max(0, Math.floor(sec));
   if (sec < 60) return '刚刚';
   const m = Math.floor(sec / 60);
-  if (m < 60) return m + 'm';
+  if (m < 60) return m + '分钟';
   const h = Math.floor(m / 60), rm = m % 60;
-  if (h < 24) return rm ? h + 'h' + rm + 'm' : h + 'h';
+  if (h < 24) return h + '小时' + (rm ? rm + '分钟' : '');
   const d = Math.floor(h / 24), rh = h % 24;
-  return rh ? d + 'd' + rh + 'h' : d + 'd';
+  return d + '天' + (rh ? rh + '小时' : '');
 }
 /* 批处理耗时：短任务保留到 0.1 秒，长任务使用易读的中文单位。 */
 export function fmtDuration(sec) {
