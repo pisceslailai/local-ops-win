@@ -76,7 +76,7 @@ python3 server.py --no-browser        # 只启动服务，不自动打开浏览�
 python3 server.py --preferred-port 9603  # 在 9600-9609 内指定优先端口
 ```
 
-启动后程序只绑定 `127.0.0.1`，从 9600 起尝试端口，被占用则递增（最多 10 个），并自动打开浏览器。命令行参数、环境变量（`CONSOLE_DATA_DIR` / `CONSOLE_LOG_DIR`）见下文“数据、隐私与备份”。
+启动后程序只绑定 `127.0.0.1`，从 9600 起尝试端口，被占用则递增（窗口 10 个）。若整个窗口落在 Hyper-V/WSL 的保留段里（见「9600 打不开」），会继续往后找可用端口，最终交由系统分配，避免完全起不来；想固定用 9600 请先执行预留脚本。`--preferred-port` 的值会优先于窗口顺序尝试。命令行参数、环境变量（`CONSOLE_DATA_DIR` / `CONSOLE_LOG_DIR`）见下文“数据、隐私与备份”。
 
 **实际地址在哪里看**：顶栏「重启 :9600」按钮上直接显示当前端口；或查看终端输出、Windows `%LOCALAPPDATA%\总控台\Logs\console.log` / macOS `~/Library/Logs/总控台/console.log`。浏览器手动访问 `http://127.0.0.1:端口号/` 即可。
 
@@ -270,7 +270,22 @@ py -3 server.py
 
 ### 9600 打不开
 
-程序可能已选择 9601–9609。查看顶栏、终端输出或 `console.log` 中的实际地址。服务可访问时，`GET /api/health` 会返回程序版本、平台、配置 schema 和降级原因，且不会执行进程扫描。
+分两种情形：
+
+- **程序在跑，只是换了端口**：可能已选择 9601–9609 或更后面的端口。查看顶栏、终端输出或 `console.log` 中的实际地址。服务可访问时，`GET /api/health` 会返回程序版本、平台、配置 schema 和降级原因，且不会执行进程扫描。
+- **根本起不来，日志写着「端口 9600-9609 均被占用」但 `netstat` 里没有任何监听者**：这不是被占用，而是端口落在了 **Windows/Hyper-V、WSL2 的保留段**里（bind 报 `WinError 10013` 而不是 `10048`），且这些保留段每次开机重新划分，所以表现为时好时坏。先确认：
+
+```bat
+netsh int ipv4 show excludedportrange protocol=tcp
+```
+
+若 9600–9609 落在某个段内，用管理员执行仓库自带脚本把端口窗口改为「自己先占用」（Hyper-V/WSL 之后会绕开它，普通程序仍可 bind）：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\win_reserve_console_port.ps1
+```
+
+脚本会自行提权，把 `9600-9619` 写成持久的管理端口排除段并现场验证；想顺手把被改过的动态端口范围恢复成 Windows 11 默认值（把 Hyper-V 的预留段整体赶到高位）可加 `-RestoreDynamicRange`。从 1.0.0 起即使不预留，总控台也不会再因窗口被保留而起不来：它会继续向后找可用端口，最后交由系统分配（此时 URL 会变，顶栏与 `console.log` 里有提示和新地址）。
 
 ### 应用启动失败
 
